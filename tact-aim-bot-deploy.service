@@ -1,0 +1,10 @@
+[Unit]
+Description=TACT-AIM-BOT auto deploy (poll GitHub main)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=luna
+WorkingDirectory=/home/luna/TACT-AIM-BOT
+ExecStart=/home/luna/TACT-AIM-BOT/deploy.sh
