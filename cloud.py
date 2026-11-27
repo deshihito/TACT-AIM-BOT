@@ -49,6 +49,28 @@ class TactAimCloud:
         self.seen_lengths: set[int] = set()
         # セッション統計 (キル/デス/ダメージ)
         self.stats = StatsTracker()
+        # 名前チャンクの蓄積: {player_id: {位置: 2文字}}。集まると正式名になる
+        self._name_chunks: dict[str, dict[int, str]] = {}
+
+    def _note_name(self, rec: PlayerRecord) -> None:
+        if rec.name_index is not None:
+            self._name_chunks.setdefault(rec.player_id, {})[rec.name_index] = rec.name_chars
+
+    def full_name(self, player_id: str) -> str | None:
+        """蓄積したチャンクから正式なユーザー名を組み立てる。
+
+        未取得チャンクは "??"、末尾の詰め物 "=" は取り除く。
+        名前らしい中身が無ければ None。
+        """
+        chunks = self._name_chunks.get(player_id)
+        if not chunks:
+            return None
+        real = [i for i, c in chunks.items() if c != "=="]
+        if not real:
+            return None
+        last = max(real)
+        name = "".join(chunks.get(i, "??") for i in range(last + 1)).rstrip("=")
+        return name or None
 
     @property
     def is_festival(self) -> bool:
@@ -69,6 +91,7 @@ class TactAimCloud:
         self.parse_failures = 0
         self.seen_lengths.clear()
         self.stats.reset()
+        self._name_chunks.clear()
         ws, self._ws = self._ws, None
         if ws is not None:
             try:
@@ -105,6 +128,7 @@ class TactAimCloud:
         old = self.players.get(rec.player_id)
         if old is None or seq_is_newer(rec.seq, old.seq):
             self.stats.observe(old, rec)
+            self._note_name(rec)
             self.players[rec.player_id] = rec
             self._seen_at[rec.player_id] = time.monotonic()
         elif old is not None and rec.seq == old.seq:

@@ -37,6 +37,7 @@ from graph_render import render_trend_png
 from history import History, data_dir
 from map_data import tiles_for
 from map_render import render_map_png
+from record import TEAM_COLOR_NAMES
 
 # 履歴はリポジトリ外の永続領域に置く (デプロイで消えないように)。
 # 旧配置 (リポジトリ内 history.json) があれば初回だけ引き継ぐ。
@@ -329,10 +330,16 @@ def _sorted_tracked():
 
 def _player_block(r, online: bool) -> str:
     st = cloud.stats.get(r.player_id)
+    name = cloud.full_name(r.player_id)
+    title = f"**{name}** (ID {r.player_id})" if name else f"**ID {r.player_id}**"
+    team = (
+        f"Team: {TEAM_COLOR_NAMES.get(r.team_color, str(r.team_color))}"
+        if r.team_color
+        else f"チーム {r.team_id}"
+    )
     lines = [
-        f"**ID {r.player_id}** {r.character} / 名前片 '{r.name_chunk}'"
-        + ("" if online else " (オフライン)"),
-        f"HP {r.hp}/{r.max_hp} | 座標 ({r.x}, {r.y}) | チーム {r.team_id}",
+        f"{title} {r.character}" + ("" if online else " (オフライン)"),
+        f"HP {r.hp}/{r.max_hp} | 座標 ({r.x}, {r.y}) | {team}",
         f"攻撃 x{r.attack:.2f} | スキルpt {r.skill_point} | 速度 ({r.vel_x}, {r.vel_y})"
         f" | 発射 {r.active_shots}件",
         f"キル {st.kills} / デス {st.deaths} (K/D {st.kd:.2f})"

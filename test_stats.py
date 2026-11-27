@@ -11,7 +11,7 @@ def rec(pid, hits):
         player_id=pid, seq=1, version=5, x=0, y=0, motion=[0] * 7,
         team_id=pid, shots=[], character="Cat", character_offset=0,
         hits=hits, hp=150, max_hp=150, attack=1.0, chat_code="00",
-        skill_point=0, vel_x=0, vel_y=0, name_chunk="", raw="",
+        skill_point=0, vel_x=0, vel_y=0, name_chars="", name_index=None, raw="",
     )
 
 

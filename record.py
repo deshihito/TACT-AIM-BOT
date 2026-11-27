@@ -43,11 +43,12 @@ _NAME_CHARS = (
 )
 
 
-def decode_name_chunk(raw5: str) -> str:
-    """末尾5文字 [2桁コード][2桁コード][ literal 1文字] -> 最大3文字。
+def decode_name_chunk(raw5: str) -> tuple[str, int | None]:
+    """末尾5文字 [2桁コード][2桁コード][位置1桁] -> (2文字, チャンク位置)。
 
-    名前はチャンク単位で回転送信されるため、これは名前全体ではなく
-    その時点のチャンク。コード "00" は詰め物 "="。
+    ユーザー名は2文字ずつのチャンクでランダムに送信される (原作 index.ts)。
+    チャンク位置 a はユーザー名の 2a, 2a+1 文字目 (0始まり) を運ぶ。
+    コード "00" は詰め物 "="。全チャンクを集めると正式名が復元できる。
     """
     out = []
     for i in (0, 2):
@@ -58,8 +59,16 @@ def decode_name_chunk(raw5: str) -> str:
             out.append(_NAME_CHARS[int(pair) - 11])
         else:
             out.append("?")
-    out.append(raw5[4] if len(raw5) > 4 else "")
-    return "".join(out)
+    last = raw5[4] if len(raw5) > 4 else ""
+    return "".join(out), int(last) if last.isdigit() else None
+
+
+# チームカラー (フィールド28、1..8)。Team color リストの色相 (Scratch
+# カラー効果 0..200 を ×2 した角度) を色名にしたもの。0 はチーム未所属。
+TEAM_COLOR_NAMES = {
+    1: "red", 2: "orange", 3: "yellow", 4: "green",
+    5: "cyan", 6: "blue", 7: "purple", 8: "magenta",
+}
 
 
 @dataclass
@@ -93,14 +102,21 @@ class PlayerRecord:
     skill_point: int
     vel_x: int  # 速度フィールド54 (-50 オフセット済み、生値)
     vel_y: int
-    name_chunk: str
+    name_chars: str  # 名前チャンクの2文字 (位置は name_index)
+    name_index: int | None  # 名前チャンクの位置 (0..9)
     raw: str = field(repr=False)
     blood_flag: str = ""  # blood版のみ: f61直後 'Blood Pico debuff?' の生値
     special_weapon: bool = False  # フィールド45: スペシャルウェポン所持
+    team_color: int = 0  # フィールド28: 0=未所属、1..8=チームカラー
 
     @property
     def active_shots(self) -> int:
         return len(self.shots)
+
+    @property
+    def name_chunk(self) -> str:
+        """従来表示用の3文字 (2文字 + 位置桁)。"""
+        return self.name_chars + ("" if self.name_index is None else str(self.name_index))
 
 
 def _int(s: str, default: int = 0) -> int:
@@ -168,8 +184,11 @@ def parse_record(value: str) -> PlayerRecord | None:
     max_hp = c.take_int(4, -2000)
     c.take(2)  # f23
     attack = (c.take_int(3) - 100) / 100
-    for _ in range(5):
-        c.take(1)  # f25..f29
+    c.take(1)  # f25: Special skin
+    c.take(1)  # f26: Scoping
+    c.take(1)  # f27
+    team_color = c.take_int(1)  # f28: Team color (0=未所属、1..8)
+    c.take(1)  # f29: Team menu
     skill_point = c.take_int(3, -100)  # f30
     c.take(4)  # f31
     c.take(7)  # f32
@@ -191,7 +210,7 @@ def parse_record(value: str) -> PlayerRecord | None:
     c.take(4)  # f56 チーム招待
     c.take_int(3, -550)  # f61
     blood_flag = c.take(1) if is_blood else ""  # blood版のみ: 'Blood Pico debuff?'
-    name_chunk = decode_name_chunk(c.take(5))  # f62 名前チャンク
+    name_chars, name_index = decode_name_chunk(c.take(5))  # f62 名前チャンク
     return PlayerRecord(
         player_id=player_id,
         seq=seq,
@@ -211,7 +230,9 @@ def parse_record(value: str) -> PlayerRecord | None:
         skill_point=skill_point,
         vel_x=vel_x,
         vel_y=vel_y,
-        name_chunk=name_chunk,
+        name_chars=name_chars,
+        name_index=name_index,
+        team_color=team_color,
         blood_flag=blood_flag,
         special_weapon=special_weapon,
         raw=value,
