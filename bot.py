@@ -11,12 +11,16 @@
                     スクレイピング先をそのプロジェクトへ切り替える。
                     フェスは同時に1つだけ。入れるたびに前の登録と入れ替わる。
   /festival_clear - フェス登録を解除し、通常の TACT-AIM へ戻す (管理者専用)
+  /map            - プレイヤー配置マップ (PNG、Components V2)
+  /tracker        - プレイヤー戦績トラッカー (ページ切替、Components V2)
 
 トークンは環境変数 DISCORD_TOKEN (.env) から読む。
 フェス登録は state.json に保存され、再起動しても維持される。
 """
 from __future__ import annotations
 
+import asyncio
+import io
 import json
 import os
 import re
@@ -28,6 +32,7 @@ from discord import app_commands
 from discord.ext import commands, tasks
 
 from cloud import CLOUD_VARS, EXTRA_VARS, PROJECT_ID, TactAimCloud
+from map_render import render_map_png
 
 cloud = TactAimCloud()
 
@@ -245,6 +250,150 @@ async def festival_clear(interaction: discord.Interaction):
     save_festival(None)
     await interaction.response.send_message(
         f"フェス登録を解除しました。通常の TACT-AIM ({PROJECT_ID}) に戻ります。"
+    )
+
+
+# --- /map と /tracker (スラッシュ、Components V2) ---
+
+def _sorted_tracked():
+    online_ids = {r.player_id for r in cloud.online_players()}
+    recs = sorted(
+        cloud.players.values(),
+        key=lambda r: (
+            r.player_id not in online_ids,
+            -cloud.stats.get(r.player_id).kills,
+            -cloud.stats.get(r.player_id).damage_dealt,
+            r.player_id,
+        ),
+    )
+    return recs, online_ids
+
+
+def _player_block(r, online: bool) -> str:
+    st = cloud.stats.get(r.player_id)
+    lines = [
+        f"**ID {r.player_id}** {r.character} / 名前片 '{r.name_chunk}'"
+        + ("" if online else " (オフライン)"),
+        f"HP {r.hp}/{r.max_hp} | 座標 ({r.x}, {r.y}) | チーム {r.team_id}",
+        f"攻撃 x{r.attack:.2f} | スキルpt {r.skill_point} | 速度 ({r.vel_x}, {r.vel_y})"
+        f" | 発射 {r.active_shots}件",
+        f"キル {st.kills} / デス {st.deaths} (K/D {st.kd:.2f})"
+        f" | 与ダメ {st.damage_dealt} / 被ダメ {st.damage_taken}"
+        f" | 命中 {st.hits_landed} / 被弾 {st.hits_taken}",
+    ]
+    if r.hits:
+        last = r.hits[-1]
+        lines.append(
+            f"直近の被弾: {last.attacker_id}から{last.damage}"
+            + (" (キル)" if last.is_kill else "")
+        )
+    return "\n".join(lines)
+
+
+class TrackerView(discord.ui.LayoutView):
+    PER_PAGE = 4
+
+    def __init__(self, author_id: int):
+        super().__init__(timeout=300)
+        self.author_id = author_id
+        self.page = 0
+        self._build()
+
+    def _pages(self):
+        recs, online_ids = _sorted_tracked()
+        chunks = [
+            recs[i : i + self.PER_PAGE] for i in range(0, len(recs), self.PER_PAGE)
+        ]
+        return chunks or [[]], online_ids
+
+    def _build(self):
+        self.clear_items()
+        chunks, online_ids = self._pages()
+        self.page = max(0, min(self.page, len(chunks) - 1))
+        items = []
+        page_recs = chunks[self.page]
+        if page_recs:
+            for r in page_recs:
+                items.append(
+                    discord.ui.TextDisplay(_player_block(r, r.player_id in online_ids))
+                )
+        else:
+            items.append(discord.ui.TextDisplay("追跡中のプレイヤーはいません。"))
+        prev_btn = discord.ui.Button(
+            label="◀", style=discord.ButtonStyle.secondary,
+            custom_id="tracker_prev", disabled=self.page <= 0,
+        )
+        prev_btn.callback = self._prev
+        page_btn = discord.ui.Button(
+            label=f"{self.page + 1} / {len(chunks)}",
+            style=discord.ButtonStyle.secondary, disabled=True,
+        )
+        refresh_btn = discord.ui.Button(
+            label="更新", style=discord.ButtonStyle.secondary,
+            custom_id="tracker_refresh",
+        )
+        refresh_btn.callback = self._refresh
+        next_btn = discord.ui.Button(
+            label="▶", style=discord.ButtonStyle.secondary,
+            custom_id="tracker_next", disabled=self.page >= len(chunks) - 1,
+        )
+        next_btn.callback = self._next
+        items.append(discord.ui.ActionRow(prev_btn, page_btn, refresh_btn, next_btn))
+        self.add_item(discord.ui.Container(*items, accent_colour=0x2F81F7))
+
+    async def _guard(self, interaction: discord.Interaction) -> bool:
+        if interaction.user.id != self.author_id:
+            await interaction.response.send_message(
+                "このパネルはコマンド実行者だけが操作できます。", ephemeral=True
+            )
+            return False
+        return True
+
+    async def _prev(self, interaction: discord.Interaction):
+        if not await self._guard(interaction):
+            return
+        self.page -= 1
+        self._build()
+        await interaction.response.edit_message(view=self)
+
+    async def _next(self, interaction: discord.Interaction):
+        if not await self._guard(interaction):
+            return
+        self.page += 1
+        self._build()
+        await interaction.response.edit_message(view=self)
+
+    async def _refresh(self, interaction: discord.Interaction):
+        if not await self._guard(interaction):
+            return
+        self._build()
+        await interaction.response.edit_message(view=self)
+
+
+@bot.tree.command(name="tracker", description="プレイヤーの戦績トラッカー")
+async def tracker(interaction: discord.Interaction):
+    await interaction.response.send_message(view=TrackerView(interaction.user.id))
+
+
+@bot.tree.command(name="map", description="プレイヤー配置マップ")
+async def map_cmd(interaction: discord.Interaction):
+    await interaction.response.defer()
+    players = sorted(cloud.online_players(), key=lambda r: r.player_id)
+    png = await asyncio.to_thread(render_map_png, players)
+    view = discord.ui.LayoutView(timeout=None)
+    view.add_item(
+        discord.ui.Container(
+            discord.ui.TextDisplay(f"**オンライン: {len(players)}人**"),
+            discord.ui.MediaGallery(
+                discord.MediaGalleryItem(
+                    media=discord.UnfurledMediaItem(url="attachment://map.png")
+                )
+            ),
+            accent_colour=0x2F81F7,
+        )
+    )
+    await interaction.followup.send(
+        view=view, file=discord.File(io.BytesIO(png), filename="map.png")
     )
 
 

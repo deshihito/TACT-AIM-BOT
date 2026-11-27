@@ -17,6 +17,7 @@ import time
 import websockets
 
 from record import PlayerRecord, parse_record, seq_is_newer
+from stats import StatsTracker
 
 CLOUD_URL = "wss://clouddata.turbowarp.org"
 PROJECT_ID = "831274817"  # TACT-AIM (uk-400)
@@ -46,6 +47,8 @@ class TactAimCloud:
         # デコード失敗の診断 (形式違いの版だと黙って0人になるため可視化する)
         self.parse_failures = 0
         self.seen_lengths: set[int] = set()
+        # セッション統計 (キル/デス/ダメージ)
+        self.stats = StatsTracker()
 
     @property
     def is_festival(self) -> bool:
@@ -65,6 +68,7 @@ class TactAimCloud:
         self.last_update_at = None
         self.parse_failures = 0
         self.seen_lengths.clear()
+        self.stats.reset()
         ws, self._ws = self._ws, None
         if ws is not None:
             try:
@@ -100,6 +104,7 @@ class TactAimCloud:
             return
         old = self.players.get(rec.player_id)
         if old is None or seq_is_newer(rec.seq, old.seq):
+            self.stats.observe(old, rec)
             self.players[rec.player_id] = rec
             self._seen_at[rec.player_id] = time.monotonic()
         elif old is not None and rec.seq == old.seq:
