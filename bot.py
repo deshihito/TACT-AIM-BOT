@@ -401,7 +401,7 @@ async def map_cmd(interaction: discord.Interaction):
     await interaction.response.defer()
     players = sorted(cloud.online_players(), key=lambda r: r.player_id)
     tiles = tiles_for(cloud.project_id)
-    png = await asyncio.to_thread(render_map_png, players, tiles)
+    png = await asyncio.to_thread(render_map_png, players, tiles, cloud.project_id)
     view = discord.ui.LayoutView(timeout=None)
     view.add_item(
         discord.ui.Container(

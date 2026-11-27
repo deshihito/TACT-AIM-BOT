@@ -1,16 +1,83 @@
 """プレイヤー配置マップの PNG レンダリング (Pillow)。
 
-ワールド座標の範囲は原作データ由来: マップ端の座標群が x ≈ -1000..5000、
-y ≈ -2000..2000 (スポーン (3200, 0)、チーム戦タレット (3200, -2000))。
+地形は原作のコスチューム素材 (assets/<project_id>/) をタイルごとに貼る。
+素材のない種別やプロジェクトでは色タイル/グリッドにフォールバックする。
 重い処理なので呼び出し側で asyncio.to_thread 経由で実行すること。
 """
 from __future__ import annotations
 
 import io
+import json
+from pathlib import Path
 
 from PIL import Image, ImageDraw, ImageFont
 
 from record import PlayerRecord
+
+ASSETS_DIR = Path(__file__).with_name("assets")
+
+# 種別 → コスチュームキー。{s} は f6 の符号で決まる接尾辞 (負なら 1)
+TYPE_COSTUME = {
+    1: "wall", 3: "bush", 6: "spike_wall", 18: "grid_wall", 27: "mud",
+    25: "shield", 19: "booster", 7: "warp1", 2: "door",
+    20: "flash_wall{s}", 21: "heal_wall{s}", 22: "laser_wall{s}",
+    23: "warp_floor{s}", 24: "energy_wall{s}", 28: "team_gem{s}",
+    4: "map_pointer", 5: "pvp_manager", 8: "auto_buffer",
+    9: "teaming_machine", 10: "information_base", 11: "locker",
+    12: "minigame_hub1", 13: "minigame_hub2", 14: "telescope",
+    16: "reporter", 17: "computer", 26: "record_player",
+}
+ROTATING_TYPES = {2, 19, 22}  # f5 (角度) で回転する種別
+
+_asset_cache: dict[str, tuple[dict, dict]] = {}
+
+
+def _load_assets(project_id: str):
+    """(manifest, {key: PIL Image}) を返す。素材が無ければ None。"""
+    if project_id in _asset_cache:
+        return _asset_cache[project_id]
+    d = ASSETS_DIR / project_id
+    manifest_path = d / "manifest.json"
+    if not manifest_path.exists():
+        return None
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    images = {}
+    for key in manifest:
+        p = d / f"{key}.png"
+        if p.exists():
+            images[key] = Image.open(p).convert("RGBA")
+    result = (manifest, images)
+    _asset_cache[project_id] = result
+    return result
+
+
+def _tile_image(assets, typ: int, f5: float, f6: float, tile_px: float,
+                cache: dict) -> Image.Image | None:
+    manifest, images = assets
+    template = TYPE_COSTUME.get(typ)
+    if template is None:
+        return None
+    if typ == 15:
+        key = "skill_spot0" if f5 > 0 else "skill_spot1"
+    elif "{s}" in template:
+        key = template.format(s=1 if f6 < 0 else 0)
+    else:
+        key = template
+    src = images.get(key)
+    if src is None:
+        return None
+    angle = (90 - f5) if typ in ROTATING_TYPES else 0
+    cache_key = (key, angle, round(tile_px))
+    if cache_key in cache:
+        return cache[cache_key]
+    w_units, h_units = manifest[key]
+    tw = max(1, round(tile_px * w_units / 50))
+    th = max(1, round(tile_px * h_units / 50))
+    img = src.resize((tw, th), Image.LANCZOS)
+    if angle:
+        img = img.rotate(angle, resample=Image.BICUBIC, expand=True)
+    cache[cache_key] = img
+    return img
 
 WORLD = (-1000, -2000, 5000, 2000)  # x_min, y_min, x_max, y_max (グリッド表示用)
 MAP_WORLD = (-1500, -1100, 4750, 1100)  # 実マップ表示用 (タイル範囲由来)
@@ -70,9 +137,10 @@ def _to_px(x: int, y: int) -> tuple[float, float]:
     return _make_to_px(WORLD, IMG_W, IMG_H)(x, y)
 
 
-def render_map_png(players: list[PlayerRecord], tiles: list | None = None) -> bytes:
+def render_map_png(players: list[PlayerRecord], tiles: list | None = None,
+                   project_id: str = "") -> bytes:
     if tiles is not None:
-        return _render_with_tiles(players, tiles)
+        return _render_with_tiles(players, tiles, project_id)
     img = Image.new("RGB", (IMG_W, IMG_H), BG)
     d = ImageDraw.Draw(img)
     grid_font = _font(16)
@@ -96,15 +164,28 @@ def render_map_png(players: list[PlayerRecord], tiles: list | None = None) -> by
     return buf.getvalue()
 
 
-def _render_with_tiles(players: list[PlayerRecord], tiles: list) -> bytes:
-    w, h = 1500, 528
+def _render_with_tiles(players: list[PlayerRecord], tiles: list,
+                       project_id: str = "") -> bytes:
+    w, h = 2000, 704
     to_px = _make_to_px(MAP_WORLD, w, h)
-    img = Image.new("RGB", (w, h), BG)
+    img = Image.new("RGBA", (w, h), BG + (255,))
     d = ImageDraw.Draw(img)
     tile_px = 50 / (MAP_WORLD[2] - MAP_WORLD[0]) * w
-    for gx, gy, typ in tiles:
+    assets = _load_assets(project_id) if project_id else None
+    tile_cache: dict = {}
+    for rec in tiles:
+        gx, gy, typ = rec[0], rec[1], rec[2]
+        f5 = rec[3] if len(rec) > 3 else 0
+        f6 = rec[4] if len(rec) > 4 else 0
         cx, cy = to_px(gx * 50, gy * 50)
-        if typ in STATION_TYPES:
+        tile_img = None
+        if assets is not None:
+            tile_img = _tile_image(assets, typ, f5, f6, tile_px, tile_cache)
+        if tile_img is not None:
+            img.alpha_composite(
+                tile_img, (round(cx - tile_img.width / 2), round(cy - tile_img.height / 2))
+            )
+        elif typ in STATION_TYPES:
             s = tile_px * 0.32
             d.rectangle([cx - s, cy - s, cx + s, cy + s], fill=STATION_COLOR)
         else:
@@ -116,7 +197,7 @@ def _render_with_tiles(players: list[PlayerRecord], tiles: list) -> bytes:
     d.rectangle([0, 0, w - 1, h - 1], outline=AXIS, width=2)
     _draw_players(d, players, to_px, w, h)
     buf = io.BytesIO()
-    img.save(buf, format="PNG")
+    img.convert("RGB").save(buf, format="PNG")
     return buf.getvalue()
 
 
