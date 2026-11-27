@@ -33,10 +33,19 @@ from discord.ext import commands, tasks
 
 from cloud import CLOUD_VARS, EXTRA_VARS, PROJECT_ID, TactAimCloud
 from graph_render import render_trend_png
-from history import History
+from history import History, data_dir
 from map_render import render_map_png
 
-history = History(Path(__file__).with_name("history.json"))
+# 履歴はリポジトリ外の永続領域に置く (デプロイで消えないように)。
+# 旧配置 (リポジトリ内 history.json) があれば初回だけ引き継ぐ。
+_history_path = data_dir() / "history.json"
+_legacy_path = Path(__file__).with_name("history.json")
+if not _history_path.exists() and _legacy_path.exists():
+    try:
+        _history_path.write_bytes(_legacy_path.read_bytes())
+    except Exception:
+        pass
+history = History(_history_path)
 
 cloud = TactAimCloud()
 

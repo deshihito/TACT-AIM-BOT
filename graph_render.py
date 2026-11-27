@@ -29,11 +29,11 @@ def render_trend_png(points: list[tuple[float, int]]) -> bytes:
     plot_w = W - PAD_L - PAD_R
     plot_h = H - PAD_T - PAD_B
 
+    # 表示窓は常に直近24時間に固定
     now = time.time()
-    t1 = points[-1][0] if points else now
-    t0 = points[0][0] if points else now - 3600
-    if t1 - t0 < 600:
-        t0 = t1 - 600
+    t1 = now
+    t0 = now - 24 * 3600
+    points = [p for p in points if p[0] >= t0]
     y_max = max([n for _, n in points], default=0)
     y_max = max(5, y_max + 1)
 
