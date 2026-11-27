@@ -96,6 +96,7 @@ class PlayerRecord:
     name_chunk: str
     raw: str = field(repr=False)
     blood_flag: str = ""  # blood版のみ: 末尾 'Blood Pico debuff?' の生値
+    special_weapon: bool = False  # フィールド45: スペシャルウェポン所持
 
     @property
     def active_shots(self) -> int:
@@ -177,8 +178,8 @@ def parse_record(value: str) -> PlayerRecord | None:
     chat_code = c.take(2)  # f34
     c.take(2)  # スキル節: 種別
     c.take(4)  # スキル節: 値
-    c.take(1)  # f44
-    c.take(1)  # f45
+    c.take(1)  # f44: Turreting
+    special_weapon = c.take(1) == "1"  # f45: Special weapon
     # [46] は静的データ経由 (ワイヤ上に独立フィールドなし)
     c.take_int(3, -500)  # f47 ペットX
     c.take_int(3, -500)  # f48 ペットY
@@ -212,6 +213,7 @@ def parse_record(value: str) -> PlayerRecord | None:
         vel_y=vel_y,
         name_chunk=name_chunk,
         blood_flag=blood_flag,
+        special_weapon=special_weapon,
         raw=value,
     )
 

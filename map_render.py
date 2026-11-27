@@ -235,6 +235,8 @@ def _draw_players(d: ImageDraw.ImageDraw, players: list[PlayerRecord], to_px,
     for i, r in enumerate(players):
         px, py = to_px(r.x, r.y)
         color = PALETTE[i % len(PALETTE)]
+        if r.special_weapon:
+            d.ellipse([px - 16, py - 16, px + 16, py + 16], outline=(34, 197, 94), width=3)
         d.ellipse([px - 9, py - 9, px + 9, py + 9], fill=color, outline=(255, 255, 255), width=2)
         title = f"{r.player_id} {r.character}"
         w = d.textlength(title, font=label_font)
