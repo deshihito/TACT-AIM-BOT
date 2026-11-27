@@ -1,0 +1,16 @@
+[Unit]
+Description=TACT-AIM Discord Bot (read-only TurboWarp cloud monitor)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=luna
+WorkingDirectory=/home/luna/tact-aim-bot
+ExecStart=/home/luna/tact-aim-bot/venv/bin/python bot.py
+Restart=always
+RestartSec=5
+EnvironmentFile=/home/luna/tact-aim-bot/.env
+
+[Install]
+WantedBy=multi-user.target
