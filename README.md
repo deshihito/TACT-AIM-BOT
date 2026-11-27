@@ -47,13 +47,18 @@ venv/bin/python scrape_test.py 25   # 25秒観測してデコード結果を表�
 ### 3. Pi 常駐
 
 ```bash
-# Pi 上
-git clone <このレポ> ~/tact-aim-bot   # または scp で一式コピー
-cd ~/tact-aim-bot
+# Pi 上 (SSH / ローカルターミナルで実行。トークンが発言として残る
+# Discord 擬似ターミナルでは実行しないこと)
+cd ~ && git clone https://github.com/deshihito/TACT-AIM-BOT.git
+cd ~/TACT-AIM-BOT
 python3 -m venv venv && venv/bin/pip install -r requirements.txt
-cp .env.example .env   # DISCORD_TOKEN を記入
+venv/bin/python scrape_test.py 15   # Pi から直接クラウドへ繋がるか先に確認
+read -rsp 'Bot token: ' T; echo
+printf 'DISCORD_TOKEN=%s\n' "$T" > .env; unset T; chmod 600 .env
 sudo cp tact-aim-bot.service /etc/systemd/system/
+sudo systemctl daemon-reload
 sudo systemctl enable --now tact-aim-bot
+systemctl --no-pager status tact-aim-bot | head -12
 ```
 
 ## 未決事項

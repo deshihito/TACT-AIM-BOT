@@ -6,11 +6,11 @@ Wants=network-online.target
 [Service]
 Type=simple
 User=luna
-WorkingDirectory=/home/luna/tact-aim-bot
-ExecStart=/home/luna/tact-aim-bot/venv/bin/python bot.py
+WorkingDirectory=/home/luna/TACT-AIM-BOT
+ExecStart=/home/luna/TACT-AIM-BOT/venv/bin/python bot.py
 Restart=always
 RestartSec=5
-EnvironmentFile=/home/luna/tact-aim-bot/.env
+EnvironmentFile=/home/luna/TACT-AIM-BOT/.env
 
 [Install]
 WantedBy=multi-user.target
