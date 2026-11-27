@@ -7,8 +7,8 @@
   !ta online      - 現在オンラインのプレイヤー一覧 (全員)
   !ta status      - クラウド接続状態・統計 (全員)
   !ta raw         - CLOUD変数の生サマリ (管理者専用)
-  /festival       - フェス登録 (管理者専用・スラッシュ)。URLを入れると
-                    スクレイピング先をそのプロジェクトへ切り替える。
+  /festival       - フェス登録 (管理者専用・スラッシュ)。登録したプロジェクトへは
+                    フェス時間に自動で切り替わる (原作のフェス判定に従う)。
                     フェスは同時に1つだけ。入れるたびに前の登録と入れ替わる。
   /festival_clear - フェス登録を解除し、通常の TACT-AIM へ戻す (管理者専用)
   /map            - プレイヤー配置マップ (PNG、Components V2)
@@ -32,6 +32,7 @@ from discord import app_commands
 from discord.ext import commands, tasks
 
 from cloud import CLOUD_VARS, EXTRA_VARS, PROJECT_ID, TactAimCloud
+from festival import is_festival
 from graph_render import render_trend_png
 from history import History, data_dir
 from map_data import tiles_for
@@ -89,6 +90,23 @@ def save_festival(project_id: str | None) -> None:
         STATE_PATH.write_text(
             json.dumps({"festival_project_id": project_id}), encoding="utf-8"
         )
+
+
+# 登録中のフェスプロジェクト。フェス時間 (原作の式) の間だけ監視先になる
+festival_pid: str | None = None
+
+
+def desired_target() -> str:
+    if festival_pid and is_festival():
+        return festival_pid
+    return PROJECT_ID
+
+
+async def apply_target() -> None:
+    target = desired_target()
+    if cloud.project_id != target:
+        await cloud.set_project(target)
+        print(f"Auto switch: scraping target -> {target}")
 
 
 def extract_project_id(text: str) -> str | None:
@@ -159,6 +177,8 @@ async def on_ready():
         update_presence.start()
     if not sample_history.is_running():
         sample_history.start()
+    if not auto_switch.is_running():
+        auto_switch.start()
 
 
 @tasks.loop(seconds=30)
@@ -173,6 +193,11 @@ async def update_presence():
 @tasks.loop(seconds=60)
 async def sample_history():
     history.add(len(cloud.online_players()))
+
+
+@tasks.loop(seconds=60)
+async def auto_switch():
+    await apply_target()
 
 
 @bot.command(name="online")
@@ -193,9 +218,15 @@ async def status(ctx):
         if cloud.is_festival
         else f"通常 TACT-AIM (プロジェクト {PROJECT_ID})"
     )
+    fest_line = ""
+    if festival_pid:
+        fest_line = (
+            f"\n- フェス登録: {festival_pid} / 自動切替オン "
+            f"({'フェス時間中' if is_festival() else '通常時間帯'})"
+        )
     await ctx.send(
         "**TACT-AIM Bot 状態**\n"
-        f"- スクレイピング先: {target}\n"
+        f"- スクレイピング先: {target}{fest_line}\n"
         f"- クラウド接続: {'接続中' if cloud.connected else '切断 (再接続中)'} "
         f"(接続回数 {cloud.connect_count})\n"
         f"- 受信した更新: {cloud.update_count}件 / 最終受信 {last}\n"
@@ -227,10 +258,11 @@ async def raw(ctx):
 
 @bot.tree.command(
     name="festival",
-    description="フェス登録 (管理者専用): スクレイピング先をフェスのプロジェクトへ切り替える",
+    description="フェス登録 (管理者専用): フェス時間に自動で切り替わるよう登録する",
 )
 @app_commands.describe(url="フェスプロジェクトのURL (TurboWarp / Scratch) またはプロジェクトID")
 async def festival(interaction: discord.Interaction, url: str):
+    global festival_pid
     if not is_admin(interaction.user.id):
         await interaction.response.send_message(
             "このコマンドは管理者専用です。", ephemeral=True
@@ -243,16 +275,19 @@ async def festival(interaction: discord.Interaction, url: str):
         )
         return
     if pid == PROJECT_ID:
-        await cloud.set_project(PROJECT_ID)
+        festival_pid = None
         save_festival(None)
+        await apply_target()
         await interaction.response.send_message(
             "通常の TACT-AIM が指定されたため、フェス登録を解除しました。"
         )
         return
-    await cloud.set_project(pid)
+    festival_pid = pid
     save_festival(pid)
+    await apply_target()
+    state = "フェス時間中のため切り替えました" if is_festival() else "通常時間帯のため、フェス時間に自動で切り替わります"
     await interaction.response.send_message(
-        f"フェス登録: プロジェクト {pid} に切り替えました（前の登録は置き換え）。"
+        f"フェス登録: プロジェクト {pid}（前の登録は置き換え）。{state}。"
         "\n解除は /festival_clear。"
     )
 
@@ -262,13 +297,15 @@ async def festival(interaction: discord.Interaction, url: str):
     description="フェス登録を解除し、通常の TACT-AIM へ戻す (管理者専用)",
 )
 async def festival_clear(interaction: discord.Interaction):
+    global festival_pid
     if not is_admin(interaction.user.id):
         await interaction.response.send_message(
             "このコマンドは管理者専用です。", ephemeral=True
         )
         return
-    await cloud.set_project(PROJECT_ID)
+    festival_pid = None
     save_festival(None)
+    await apply_target()
     await interaction.response.send_message(
         f"フェス登録を解除しました。通常の TACT-AIM ({PROJECT_ID}) に戻ります。"
     )
@@ -448,10 +485,11 @@ async def main():
     token = os.environ.get("DISCORD_TOKEN", "").strip()
     if not token:
         raise SystemExit("DISCORD_TOKEN が未設定です (.env を確認)")
+    global festival_pid
     festival_pid = load_festival()
     if festival_pid:
-        await cloud.set_project(festival_pid)
-        print(f"Festival project restored: {festival_pid}")
+        print(f"Festival project registered: {festival_pid}")
+    await apply_target()
     async with bot:
         bot.loop.create_task(cloud.run_forever())
         await bot.start(token)
