@@ -43,6 +43,9 @@ class TactAimCloud:
         self.update_count = 0
         self.last_update_at: float | None = None
         self.started_at = time.monotonic()
+        # デコード失敗の診断 (形式違いの版だと黙って0人になるため可視化する)
+        self.parse_failures = 0
+        self.seen_lengths: set[int] = set()
 
     @property
     def is_festival(self) -> bool:
@@ -60,6 +63,8 @@ class TactAimCloud:
         self.players.clear()
         self._seen_at.clear()
         self.last_update_at = None
+        self.parse_failures = 0
+        self.seen_lengths.clear()
         ws, self._ws = self._ws, None
         if ws is not None:
             try:
@@ -89,6 +94,9 @@ class TactAimCloud:
             return
         rec = parse_record(value)
         if rec is None:
+            if len(value) >= 100 and value.isdigit():
+                self.parse_failures += 1
+                self.seen_lengths.add(len(value))
             return
         old = self.players.get(rec.player_id)
         if old is None or seq_is_newer(rec.seq, old.seq):

@@ -95,6 +95,13 @@ bot = commands.Bot(command_prefix="!ta ", intents=intents)
 def fmt_players() -> str:
     players = sorted(cloud.online_players(), key=lambda r: r.player_id)
     if not players:
+        if cloud.parse_failures:
+            lengths = ", ".join(str(n) for n in sorted(cloud.seen_lengths))
+            return (
+                "レコードは届いていますが、デコードできていません"
+                f"（失敗 {cloud.parse_failures}件、レコード長: {lengths}）。"
+                "\n16.9形式 (246文字) と違う版の可能性があります。"
+            )
         return "オンラインのプレイヤーはいません（観測範囲内）。"
     lines = [f"**オンライン: {len(players)}人**"]
     for r in players:
@@ -169,6 +176,13 @@ async def status(ctx):
         f"- 追跡中プレイヤー: {cloud.tracked_count()}人 "
         f"(オンライン判定 {len(cloud.online_players())}人)\n"
         f"- 稼働時間: {uptime}秒"
+        + (
+            f"\n- デコード失敗: {cloud.parse_failures}件 "
+            f"(レコード長: {', '.join(str(n) for n in sorted(cloud.seen_lengths))})"
+            " ※16.9形式 (246文字) と違う可能性"
+            if cloud.parse_failures
+            else ""
+        )
     )
 
 
