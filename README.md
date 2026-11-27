@@ -68,18 +68,19 @@ sudo systemctl enable --now tact-aim-bot
 systemctl --no-pager status tact-aim-bot | head -12
 ```
 
-## 自動デプロイ
+## 自動更新
 
-GitHub の main へ push されると、Pi が2分間隔でポーリングして自動で
-pull + Bot再起動する (AGO BOT と同方式)。初回だけ Pi 上で:
+GitHub の main へ push されると、Pi の cron が毎分 `update.sh` を呼び、
+新しいコミットがある時だけ pull + Bot再起動する。初回だけ Pi 上で:
 
 ```bash
-cd ~/TACT-AIM-BOT && sudo bash install-autodeploy.sh
+cd ~/TACT-AIM-BOT && bash setup-cron.sh
 ```
 
-これで deploy 用 timer が有効になり、luna が `tact-aim-bot` の再起動だけを
-パスワードなしで実行できる sudoers が入る。以後の更新は push するだけで反映される。
-動作ログは `journalctl -u tact-aim-bot-deploy.service` で見られる。
+crontab への登録、luna が `tact-aim-bot` の再起動だけをパスワードなしで
+実行できる sudoers の追加、旧 systemd timer 方式があればその無効化まで行う。
+以後の更新は push するだけで反映される。更新ログは `update.log` に残る
+(更新がない分は無言)。
 
 ## 未決事項
 
