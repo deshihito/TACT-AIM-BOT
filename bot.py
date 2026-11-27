@@ -32,7 +32,11 @@ from discord import app_commands
 from discord.ext import commands, tasks
 
 from cloud import CLOUD_VARS, EXTRA_VARS, PROJECT_ID, TactAimCloud
+from graph_render import render_trend_png
+from history import History
 from map_render import render_map_png
+
+history = History(Path(__file__).with_name("history.json"))
 
 cloud = TactAimCloud()
 
@@ -143,6 +147,8 @@ async def on_ready():
         _tree_synced = True
     if not update_presence.is_running():
         update_presence.start()
+    if not sample_history.is_running():
+        sample_history.start()
 
 
 @tasks.loop(seconds=30)
@@ -152,6 +158,11 @@ async def update_presence():
     await bot.change_presence(
         activity=discord.Game(name=f"TACT-AIM {n}人オンライン ({state})")
     )
+
+
+@tasks.loop(seconds=60)
+async def sample_history():
+    history.add(len(cloud.online_players()))
 
 
 @bot.command(name="online")
@@ -394,6 +405,31 @@ async def map_cmd(interaction: discord.Interaction):
     )
     await interaction.followup.send(
         view=view, file=discord.File(io.BytesIO(png), filename="map.png")
+    )
+
+
+@bot.tree.command(name="player", description="プレイヤー数の推移グラフ")
+async def player_cmd(interaction: discord.Interaction):
+    await interaction.response.defer()
+    points = list(history.points)
+    current = len(cloud.online_players())
+    if not points or points[-1][1] != current:
+        points.append((time.time(), current))
+    png = await asyncio.to_thread(render_trend_png, points)
+    view = discord.ui.LayoutView(timeout=None)
+    view.add_item(
+        discord.ui.Container(
+            discord.ui.TextDisplay(f"**オンライン: {current}人**"),
+            discord.ui.MediaGallery(
+                discord.MediaGalleryItem(
+                    media=discord.UnfurledMediaItem(url="attachment://players.png")
+                )
+            ),
+            accent_colour=0x2F81F7,
+        )
+    )
+    await interaction.followup.send(
+        view=view, file=discord.File(io.BytesIO(png), filename="players.png")
     )
 
 
