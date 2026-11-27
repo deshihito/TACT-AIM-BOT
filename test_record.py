@@ -24,7 +24,9 @@ def test_blood_records():
         assert rec.player_id == pid
         assert rec.character == char, (rec.character, char)
         assert (rec.hp, rec.max_hp) == (hp, max_hp)
-        assert rec.blood_flag == raw[246]
+        # debuff旗は f61 の直後 (raw[241])、名前チャンクはその後ろ raw[242:247]
+        assert rec.blood_flag == "0"
+        assert rec.name_chunk == {"1832": "==5", "9742": "IR0", "1761": "ay1"}[pid]
 
 
 def test_blood_roster_extension():

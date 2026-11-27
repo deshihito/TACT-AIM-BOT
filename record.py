@@ -6,8 +6,8 @@
 残りは raw のまま保持する (テスト段階なので推測で意味を付けない)。
 
 派生版 "TACT-AIM blood" (project 1297721083、フェス登録先) は
-63フィールド目 'Blood Pico debuff?' (1文字) が末尾に追加され 247 文字。
-先頭246文字の配置は本家と同一で、キャラ名簿だけ41種に拡張されている
+63フィールド目 'Blood Pico debuff?' (1文字) が f61 の後ろ・名前チャンクの
+前に挟まって 247 文字。名前以外の配置は本家と同一で、キャラ名簿だけ41種に拡張されている
 (本家の project.json の Cloud memo / Character リストで確認済み)。
 """
 from __future__ import annotations
@@ -15,7 +15,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 
 RECORD_LEN = 246
-BLOOD_RECORD_LEN = 247  # blood版: 末尾に 'Blood Pico debuff?' (1文字)
+BLOOD_RECORD_LEN = 247  # blood版: f61の後ろ・名前チャンクの前に 'Blood Pico debuff?' (1文字)
 
 # キャラ名簿: Character リスト (15 幅レコード) の先頭フィールド、出現順。
 CHARACTERS = [
@@ -95,7 +95,7 @@ class PlayerRecord:
     vel_y: int
     name_chunk: str
     raw: str = field(repr=False)
-    blood_flag: str = ""  # blood版のみ: 末尾 'Blood Pico debuff?' の生値
+    blood_flag: str = ""  # blood版のみ: f61直後 'Blood Pico debuff?' の生値
     special_weapon: bool = False  # フィールド45: スペシャルウェポン所持
 
     @property
@@ -133,8 +133,7 @@ def parse_record(value: str) -> PlayerRecord | None:
         return None
     is_blood = len(value) == BLOOD_RECORD_LEN
     roster = BLOOD_CHARACTERS if is_blood else CHARACTERS
-    blood_flag = value[RECORD_LEN] if is_blood else ""
-    c = _Cursor(value[:RECORD_LEN])
+    c = _Cursor(value)
     player_id = c.take(4)
     seq = c.take_int(5)
     version = c.take_int(1)
@@ -191,6 +190,7 @@ def parse_record(value: str) -> PlayerRecord | None:
     vel_y = c.take_int(2, -50)  # f55
     c.take(4)  # f56 チーム招待
     c.take_int(3, -550)  # f61
+    blood_flag = c.take(1) if is_blood else ""  # blood版のみ: 'Blood Pico debuff?'
     name_chunk = decode_name_chunk(c.take(5))  # f62 名前チャンク
     return PlayerRecord(
         player_id=player_id,
