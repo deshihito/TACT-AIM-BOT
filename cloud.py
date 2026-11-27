@@ -30,8 +30,11 @@ EXTRA_VARS = ["☁ Member1"] + [f"☁ Chat{i}" for i in range(1, 6)]
 
 
 class TactAimCloud:
-    def __init__(self, online_window: float = 45.0):
+    def __init__(self, online_window: float = 45.0, project_id: str = PROJECT_ID):
         self.online_window = online_window
+        # 現在のスクレイピング対象。通常は PROJECT_ID、フェス登録中はフェス側。
+        self.project_id = project_id
+        self._ws = None
         self.values: dict[str, str] = {}
         self.players: dict[str, PlayerRecord] = {}
         self._seen_at: dict[str, float] = {}
@@ -40,6 +43,30 @@ class TactAimCloud:
         self.update_count = 0
         self.last_update_at: float | None = None
         self.started_at = time.monotonic()
+
+    @property
+    def is_festival(self) -> bool:
+        return self.project_id != PROJECT_ID
+
+    async def set_project(self, project_id: str) -> bool:
+        """スクレイピング対象を切り替える。蓄積は破棄し、接続中なら張り替える。
+
+        戻り値: 実際に切り替えたら True (同じ対象なら False)。
+        """
+        if project_id == self.project_id:
+            return False
+        self.project_id = project_id
+        self.values.clear()
+        self.players.clear()
+        self._seen_at.clear()
+        self.last_update_at = None
+        ws, self._ws = self._ws, None
+        if ws is not None:
+            try:
+                await ws.close()
+            except Exception:
+                pass
+        return True
 
     # --- 状態参照 ---
     def online_players(self) -> list[PlayerRecord]:
@@ -78,27 +105,36 @@ class TactAimCloud:
             ping_interval=20,
             ping_timeout=20,
         ) as ws:
+            self._ws = ws
             await ws.send(
                 json.dumps(
-                    {"method": "handshake", "user": USERNAME, "project_id": PROJECT_ID}
+                    {
+                        "method": "handshake",
+                        "user": USERNAME,
+                        "project_id": self.project_id,
+                    }
                 )
                 + "\n"
             )
             self.connected = True
             self.connect_count += 1
-            async for message in ws:
-                for line in str(message).split("\n"):
-                    line = line.strip()
-                    if not line:
-                        continue
-                    try:
-                        msg = json.loads(line)
-                    except json.JSONDecodeError:
-                        continue
-                    if msg.get("method") in ("set", "create") and isinstance(
-                        msg.get("name"), str
-                    ):
-                        self._handle_set(msg["name"], str(msg.get("value", "")))
+            try:
+                async for message in ws:
+                    for line in str(message).split("\n"):
+                        line = line.strip()
+                        if not line:
+                            continue
+                        try:
+                            msg = json.loads(line)
+                        except json.JSONDecodeError:
+                            continue
+                        if msg.get("method") in ("set", "create") and isinstance(
+                            msg.get("name"), str
+                        ):
+                            self._handle_set(msg["name"], str(msg.get("value", "")))
+            finally:
+                if self._ws is ws:
+                    self._ws = None
 
     async def run_forever(self) -> None:
         """切断時は指数バックオフで再接続し続ける。"""
