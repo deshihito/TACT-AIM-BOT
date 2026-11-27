@@ -1,15 +1,21 @@
-"""TACT-AIM (16.9) クラウドレコードのパーサ。
+"""TACT-AIM クラウドレコードのパーサ。
 
 ワイヤ形式は TACT-AIM-distilled の src/distilled/Pen_All/cloud.ts
 (Load cloud data 手順) で確定した固定長 246 文字の数字文字列。
 先頭から順に固定幅で切る。意味のあるフィールドだけ名前を付け、
 残りは raw のまま保持する (テスト段階なので推測で意味を付けない)。
+
+派生版 "TACT-AIM blood" (project 1297721083、フェス登録先) は
+63フィールド目 'Blood Pico debuff?' (1文字) が末尾に追加され 247 文字。
+先頭246文字の配置は本家と同一で、キャラ名簿だけ41種に拡張されている
+(本家の project.json の Cloud memo / Character リストで確認済み)。
 """
 from __future__ import annotations
 
 from dataclasses import dataclass, field
 
 RECORD_LEN = 246
+BLOOD_RECORD_LEN = 247  # blood版: 末尾に 'Blood Pico debuff?' (1文字)
 
 # キャラ名簿: Character リスト (15 幅レコード) の先頭フィールド、出現順。
 CHARACTERS = [
@@ -17,6 +23,14 @@ CHARACTERS = [
     "Dark Nano", "Cat Bot", "Cyborg Pico", "Lava Gobo", "Golden Bot",
     "Ninja Giga", "Lightning Giga", "Pumpkin", "Shield Pico", "Sacred Tera",
     "Snowman", "Military Pico", "Combat Nano", "April Cat", "The Player",
+]
+
+# blood版の追加キャラ (index 23..40、本家 project.json の Character リスト順)
+BLOOD_CHARACTERS = CHARACTERS + [
+    "Blood cat", "Shark Gobo", "Alien", "Vampire Cat", "Blood Gobo",
+    "Cosmos Cat", "Blood Giga", "Actress Giga", "Blood Nano", "Phantom Pico",
+    "Burning Tera", "Blood Pico", "Knight Nano", "Bomber Nano", "Blood Tera",
+    "Chaos Cat", "Ghost Cat", "Sanguine Nano",
 ]
 
 # 名前チャンクの復号表: 2桁コード (11..97) -> 文字。
@@ -81,6 +95,7 @@ class PlayerRecord:
     vel_y: int
     name_chunk: str
     raw: str = field(repr=False)
+    blood_flag: str = ""  # blood版のみ: 末尾 'Blood Pico debuff?' の生値
 
     @property
     def active_shots(self) -> int:
@@ -109,10 +124,16 @@ class _Cursor:
 
 
 def parse_record(value: str) -> PlayerRecord | None:
-    """246文字レコードをパースする。形式が合わなければ None。"""
-    if not value or len(value) != RECORD_LEN or not value.isdigit():
+    """246文字 (本家) / 247文字 (blood版) レコードをパースする。
+
+    形式が合わなければ None。
+    """
+    if not value or len(value) not in (RECORD_LEN, BLOOD_RECORD_LEN) or not value.isdigit():
         return None
-    c = _Cursor(value)
+    is_blood = len(value) == BLOOD_RECORD_LEN
+    roster = BLOOD_CHARACTERS if is_blood else CHARACTERS
+    blood_flag = value[RECORD_LEN] if is_blood else ""
+    c = _Cursor(value[:RECORD_LEN])
     player_id = c.take(4)
     seq = c.take_int(5)
     version = c.take_int(1)
@@ -126,7 +147,7 @@ def parse_record(value: str) -> PlayerRecord | None:
     character_offset = (char_raw - 10) * 15
     char_idx = character_offset // 15
     character = (
-        CHARACTERS[char_idx] if 0 <= char_idx < len(CHARACTERS) else f"#{char_raw}"
+        roster[char_idx] if 0 <= char_idx < len(roster) else f"#{char_raw}"
     )
     c.take(1)  # f16
     c.take_int(3, -100)  # f17
@@ -190,6 +211,7 @@ def parse_record(value: str) -> PlayerRecord | None:
         vel_x=vel_x,
         vel_y=vel_y,
         name_chunk=name_chunk,
+        blood_flag=blood_flag,
         raw=value,
     )
 
