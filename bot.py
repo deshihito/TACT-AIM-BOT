@@ -34,6 +34,7 @@ from discord.ext import commands, tasks
 from cloud import CLOUD_VARS, EXTRA_VARS, PROJECT_ID, TactAimCloud
 from graph_render import render_trend_png
 from history import History, data_dir
+from map_data import tiles_for
 from map_render import render_map_png
 
 # 履歴はリポジトリ外の永続領域に置く (デプロイで消えないように)。
@@ -399,7 +400,8 @@ async def tracker(interaction: discord.Interaction):
 async def map_cmd(interaction: discord.Interaction):
     await interaction.response.defer()
     players = sorted(cloud.online_players(), key=lambda r: r.player_id)
-    png = await asyncio.to_thread(render_map_png, players)
+    tiles = tiles_for(cloud.project_id)
+    png = await asyncio.to_thread(render_map_png, players, tiles)
     view = discord.ui.LayoutView(timeout=None)
     view.add_item(
         discord.ui.Container(
