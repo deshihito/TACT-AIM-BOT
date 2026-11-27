@@ -4,9 +4,9 @@
 スクレイピングし、Discord で情報を出す。チート検出・執行はしない。
 
 コマンド (prefix: !ta):
-  !ta online  - 現在オンラインのプレイヤー一覧
-  !ta status  - クラウド接続状態・統計
-  !ta raw     - CLOUD変数の生サマリ (デバッグ用)
+  !ta online  - 現在オンラインのプレイヤー一覧 (全員)
+  !ta status  - クラウド接続状態・統計 (全員)
+  !ta raw     - CLOUD変数の生サマリ (管理者専用)
 
 トークンは環境変数 DISCORD_TOKEN (.env) から読む。
 """
@@ -21,6 +21,24 @@ from discord.ext import commands, tasks
 from cloud import CLOUD_VARS, EXTRA_VARS, TactAimCloud
 
 cloud = TactAimCloud()
+
+# 管理者 (Discord ユーザーID)。特定コマンド (raw 等) はこのIDだけが実行できる。
+ADMIN_IDS = {
+    1320705325686587408,
+    1498868054904406029,
+    831369295597928538,
+}
+
+
+def is_admin(user_id: int) -> bool:
+    return user_id in ADMIN_IDS
+
+
+def admin_only():
+    async def predicate(ctx):
+        return is_admin(ctx.author.id)
+
+    return commands.check(predicate)
 
 intents = discord.Intents.default()
 intents.message_content = True
@@ -44,6 +62,14 @@ def fmt_players() -> str:
             f"| 座標 ({r.x}, {r.y}) | チーム {r.team_id} | 名前片 '{r.name_chunk}'{hits}"
         )
     return "\n".join(lines)
+
+
+@bot.event
+async def on_command_error(ctx, error):
+    if isinstance(error, commands.CheckFailure):
+        await ctx.send("このコマンドは管理者専用です。")
+        return
+    raise error
 
 
 @bot.event
@@ -87,6 +113,7 @@ async def status(ctx):
 
 
 @bot.command(name="raw")
+@admin_only()
 async def raw(ctx):
     lines = ["**CLOUD変数サマリ**"]
     for name in CLOUD_VARS + EXTRA_VARS:
