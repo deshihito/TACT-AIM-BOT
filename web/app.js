@@ -38,16 +38,25 @@ const ctx = canvas.getContext("2d");
 const hudTitle = document.getElementById("title");
 const hudCount = document.getElementById("count");
 const hudState = document.getElementById("state");
+const playersEl = document.getElementById("players");
+const followbar = document.getElementById("followbar");
+const followName = document.getElementById("followname");
+const followExit = document.getElementById("followexit");
+
+const TILE_PX = 50 * UNIT;  // 1マス (50ユニット) の仮想 px
 
 let mapsData = null;
 let terrain = null;       // {key, canvas}
 let assets = new Map();   // project -> {manifest, images: Map}
 let curProject = null;
+let curTiles = [];        // 現在のマップのタイル一覧 (フォロー時のライブ描画用)
 let weaponsData = null;   // {items, scripts, skills}
 let prevSnap = null, curSnap = null, prevAt = 0, curAt = 0;
 let simPlayers = [];      // 最新スナップショットのプレイヤー (弾シミュレーション用)
 let wallSet = new Set();  // "gx/gy" (弾が当たるマス)
 let gimmicks = [];        // ギミックタイル (マップ順)
+let followId = null;      // フォロー中のプレイヤーID (null=全体表示)
+let view = { s: 1, ox: 0, oy: 0, vw: 0, vh: 0 }; // 現在の変換 (逆変換用)
 
 function toPx(x, y) {
   return [
@@ -163,6 +172,58 @@ function drawStampCostume(name, x, y, dir, scaleMul, alpha) {
 
 // ---------- 地形 ----------
 
+// タイル1枚をコンテキスト g (仮想 px 座標系) へ描く。
+// buildTerrain のオフスクリーン焼き込みと、フォロー時のライブ描画で共用。
+function drawTile(g, images, manifest, tile) {
+  const [gx, gy, typ, f5 = 0, f6 = 0] = tile;
+  const [cx, cy] = toPx(gx * 50, gy * 50);
+  let key2 = null;
+  const template = TYPE_COSTUME[typ];
+  if (typ === 15) key2 = f5 > 0 ? "skill_spot0" : "skill_spot1";
+  else if (template) key2 = template.replace("{s}", f6 < 0 ? "1" : "0");
+  const img = key2 && images.get(key2);
+  if (img && manifest && manifest[key2]) {
+    const [wu, hu] = manifest[key2];
+    const w = TILE_PX * wu / 50, h = TILE_PX * hu / 50;
+    g.save();
+    g.translate(cx, cy);
+    if (ROTATING.has(typ)) g.rotate(-(90 - f5) * Math.PI / 180);
+    g.drawImage(img, -w / 2, -h / 2, w, h);
+    g.restore();
+  } else if (STATION_TYPES.has(typ)) {
+    const s = TILE_PX * 0.32;
+    g.fillStyle = "#e2e8f0";
+    g.fillRect(cx - s, cy - s, s * 2, s * 2);
+  } else {
+    const s = TILE_PX / 2 + 0.5;
+    g.fillStyle = TILE_COLORS[typ] || "#64748b";
+    g.fillRect(cx - s, cy - s, s * 2, s * 2);
+  }
+}
+
+// 本家風の床: 白地に 50ユニット (1マス) 間隔のグリッド線。
+// 範囲はワールド座標 [wx0, wx1] × [wy0, wy1]、線幅は呼び出し側の単位で指定。
+function drawFloor(g, wx0, wy0, wx1, wy1, lineWidth) {
+  const [px0, py1] = toPx(wx0, wy0);
+  const [px1, py0] = toPx(wx1, wy1);
+  g.fillStyle = "#ffffff";
+  g.fillRect(px0, py0, px1 - px0, py1 - py0);
+  g.strokeStyle = "#b5b5b5";
+  g.lineWidth = lineWidth;
+  g.beginPath();
+  for (let gx = Math.ceil(wx0 / 50); gx * 50 <= wx1; gx++) {
+    const [x] = toPx(gx * 50, 0);
+    g.moveTo(x, py0);
+    g.lineTo(x, py1);
+  }
+  for (let gy = Math.ceil(wy0 / 50); gy * 50 <= wy1; gy++) {
+    const [, y] = toPx(0, gy * 50);
+    g.moveTo(px0, y);
+    g.lineTo(px1, y);
+  }
+  g.stroke();
+}
+
 async function buildTerrain(project, mapNum) {
   const key = `${project}/${mapNum}`;
   if (terrain && terrain.key === key) return;
@@ -174,47 +235,43 @@ async function buildTerrain(project, mapNum) {
   const off = document.createElement("canvas");
   off.width = VW; off.height = VH;
   const g = off.getContext("2d");
-  g.fillStyle = "#0d1117";
-  g.fillRect(0, 0, VW, VH);
+  drawFloor(g, MAP_WORLD[0], MAP_WORLD[1], MAP_WORLD[2], MAP_WORLD[3], 1);
   terrain = { key, canvas: off };
   wallSet = new Set();
   gimmicks = [];
+  curTiles = [];
   if (!entry) return;
   const tiles = [...entry.base, ...(entry.maps[mapNum || "1"] || [])];
+  curTiles = tiles;
   for (const [gx, gy, typ] of tiles) {
     if (BULLET_WALL_TYPES.has(typ)) wallSet.add(`${gx}/${gy}`);
   }
   gimmicks = tiles.filter((t) => GIMMICK_TYPES.has(t[2]));
   const { manifest, images } = await loadAssets(project);
-  const tilePx = 50 / (MAP_WORLD[2] - MAP_WORLD[0]) * VW;
-  for (const [gx, gy, typ, f5 = 0, f6 = 0] of tiles) {
-    const [cx, cy] = toPx(gx * 50, gy * 50);
-    let key2 = null;
-    const template = TYPE_COSTUME[typ];
-    if (typ === 15) key2 = f5 > 0 ? "skill_spot0" : "skill_spot1";
-    else if (template) key2 = template.replace("{s}", f6 < 0 ? "1" : "0");
-    const img = key2 && images.get(key2);
-    if (img && manifest[key2]) {
-      const [wu, hu] = manifest[key2];
-      const w = tilePx * wu / 50, h = tilePx * hu / 50;
-      g.save();
-      g.translate(cx, cy);
-      if (ROTATING.has(typ)) g.rotate(-(90 - f5) * Math.PI / 180);
-      g.drawImage(img, -w / 2, -h / 2, w, h);
-      g.restore();
-    } else if (STATION_TYPES.has(typ)) {
-      const s = tilePx * 0.32;
-      g.fillStyle = "#e2e8f0";
-      g.fillRect(cx - s, cy - s, s * 2, s * 2);
-    } else {
-      const s = tilePx / 2 + 0.5;
-      g.fillStyle = TILE_COLORS[typ] || "#64748b";
-      g.fillRect(cx - s, cy - s, s * 2, s * 2);
-    }
-  }
+  for (const tile of tiles) drawTile(g, images, manifest, tile);
   g.strokeStyle = "#475569";
   g.lineWidth = 2;
   g.strokeRect(0, 0, VW - 1, VH - 1);
+}
+
+// フォロー時の地形ライブ描画 (拡大でぼやけるためビットマップは使わない)。
+// 現在の変換で見えている範囲 (+1マス余裕) だけを毎フレーム描く。
+function drawTerrainLive() {
+  const vx0 = (0 - view.ox) / view.s, vy0 = (0 - view.oy) / view.s;
+  const vx1 = (view.vw - view.ox) / view.s, vy1 = (view.vh - view.oy) / view.s;
+  const wx0 = vx0 / UNIT + MAP_WORLD[0] - 50, wx1 = vx1 / UNIT + MAP_WORLD[0] + 50;
+  const wy0 = MAP_WORLD[1] + (VH - vy1) / UNIT - 50;
+  const wy1 = MAP_WORLD[1] + (VH - vy0) / UNIT + 50;
+  const entry = curProject ? assets.get(curProject) : null;
+  drawFloor(ctx, wx0, wy0, wx1, wy1, 2 * UNIT);
+  for (const tile of curTiles) {
+    const tx = tile[0] * 50, ty = tile[1] * 50;
+    if (tx < wx0 - 50 || tx > wx1 + 50 || ty < wy0 - 50 || ty > wy1 + 50) continue;
+    drawTile(ctx, entry?.images || new Map(), entry?.manifest || null, tile);
+  }
+  ctx.strokeStyle = "#475569";
+  ctx.lineWidth = 2;
+  ctx.strokeRect(0, 0, VW - 1, VH - 1);
 }
 
 // ---------- 弾の生成 (原作 Player shot / Shot create の再現) ----------
@@ -1022,18 +1079,77 @@ function drawPlayer(p, x, y, now) {
   ctx.textAlign = "left";
 }
 
-function drawPlayers(now) {
-  if (!curSnap) return;
+// 全プレイヤーの補間位置 (id -> [x, y])。描画とフォローカメラで共用。
+function interpPositions(now) {
+  const out = new Map();
+  if (!curSnap) return out;
   const span = Math.max(1, curAt - prevAt);
   const t = Math.min(1, (now - curAt) / span);
   const prevById = new Map((prevSnap?.players || []).map((p) => [p.id, p]));
   for (const p of curSnap.players) {
     const q = prevById.get(p.id);
-    const x = q ? q.x + (p.x - q.x) * t : p.x;
-    const y = q ? q.y + (p.y - q.y) * t : p.y;
+    out.set(p.id, [
+      q ? q.x + (p.x - q.x) * t : p.x,
+      q ? q.y + (p.y - q.y) * t : p.y,
+    ]);
+  }
+  return out;
+}
+
+function drawPlayers(now, positions) {
+  if (!curSnap) return;
+  for (const p of curSnap.players) {
+    const [x, y] = positions.get(p.id) || [p.x, p.y];
     drawPlayer(p, x, y, now);
   }
 }
+
+// ---------- プレイヤー選択 (フォロー) ----------
+
+function renderPlayerList() {
+  playersEl.innerHTML = "";
+  if (!curSnap) return;
+  for (const p of curSnap.players) {
+    const b = document.createElement("button");
+    b.type = "button";
+    b.className = "chip" + (p.id === followId ? " active" : "");
+    b.textContent = p.name || `ID ${p.id}`;
+    b.addEventListener("click", () => setFollow(p.id === followId ? null : p.id));
+    playersEl.appendChild(b);
+  }
+}
+
+function setFollow(id) {
+  followId = id;
+  renderPlayerList();
+  if (id === null) {
+    followbar.style.display = "none";
+  } else {
+    const p = curSnap?.players.find((pl) => pl.id === id);
+    followName.textContent = `${p?.name || `ID ${id}`} の視点`;
+    followbar.style.display = "flex";
+  }
+}
+
+followExit.addEventListener("click", () => setFollow(null));
+
+// キャンバスのタップでも選択 (最も近いプレイヤー、画面 44px 以内)。
+// フォロー中に何もない場所をタップしても解除しない。
+canvas.addEventListener("pointerdown", (e) => {
+  if (!curSnap || !view.s) return;
+  const vx = (e.clientX - view.ox) / view.s;
+  const vy = (e.clientY - view.oy) / view.s;
+  const positions = interpPositions(performance.now());
+  let best = null, bestD = 44 / view.s;
+  for (const p of curSnap.players) {
+    const pos = positions.get(p.id);
+    if (!pos) continue;
+    const [px, py] = toPx(pos[0], pos[1]);
+    const d = Math.hypot(px - vx, py - vy);
+    if (d < bestD) { bestD = d; best = p; }
+  }
+  if (best) setFollow(best.id);
+});
 
 let simAcc = 0, lastFrameAt = 0;
 function frame(now) {
@@ -1043,12 +1159,31 @@ function frame(now) {
     canvas.width = vw * dpr;
     canvas.height = vh * dpr;
   }
-  const scale = Math.min(vw / VW, vh / VH);
-  ctx.setTransform(dpr * scale, 0, 0, dpr * scale,
-    dpr * (vw - VW * scale) / 2, dpr * (vh - VH * scale) / 2);
+  const positions = interpPositions(now);
+  // フォロー対象が消えたら全体表示に戻る
+  let followPos = null;
+  if (followId !== null && curSnap) {
+    if (positions.has(followId)) followPos = positions.get(followId);
+    else setFollow(null);
+  }
+  let s, ox, oy;
+  if (followPos) {
+    // 原作の視野 (480×360 ユニット) を対象中心で画面にフィットさせる
+    const [cx, cy] = toPx(followPos[0], followPos[1]);
+    s = Math.min(vw / (480 * UNIT), vh / (360 * UNIT));
+    ox = vw / 2 - cx * s;
+    oy = vh / 2 - cy * s;
+  } else {
+    s = Math.min(vw / VW, vh / VH);
+    ox = (vw - VW * s) / 2;
+    oy = (vh - VH * s) / 2;
+  }
+  view = { s, ox, oy, vw, vh };
+  ctx.setTransform(dpr * s, 0, 0, dpr * s, dpr * ox, dpr * oy);
   ctx.fillStyle = "#0d1117";
   ctx.fillRect(-VW, -VH, VW * 3, VH * 3);
-  if (terrain) ctx.drawImage(terrain.canvas, 0, 0);
+  if (followPos) drawTerrainLive();
+  else if (terrain) ctx.drawImage(terrain.canvas, 0, 0);
   // 弾シミュレーションは原作の 30fps 固定ステップ
   if (lastFrameAt) simAcc += Math.min(250, now - lastFrameAt);
   lastFrameAt = now;
@@ -1057,7 +1192,7 @@ function frame(now) {
     stepSim();
   }
   drawBullets();
-  drawPlayers(now);
+  drawPlayers(now, positions);
   requestAnimationFrame(frame);
 }
 requestAnimationFrame(frame);
@@ -1077,6 +1212,16 @@ async function handleSnap(snap) {
   prevSnap = curSnap; prevAt = curAt;
   curSnap = snap; curAt = performance.now();
   simPlayers = snap.players;
+  // フォロー対象が退出したら全体表示に戻し、一覧と追随表示を同期する
+  if (followId !== null && !snap.players.some((p) => p.id === followId)) {
+    followId = null;
+  }
+  if (followId === null) {
+    followbar.style.display = "none";
+    renderPlayerList();
+  } else {
+    setFollow(followId);
+  }
   hudTitle.textContent = snap.festival ? "TACT-AIM blood (フェス)" : "TACT-AIM";
   hudCount.textContent = `オンライン: ${snap.players.length}人`;
   hudState.textContent = "";
