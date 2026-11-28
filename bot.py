@@ -196,10 +196,12 @@ async def _bulk_sync() -> None:
     # tree.sync() の一括上書きを、Entry Point コマンドを保持したまま行う。
     #
     # アクティビティ有効化時に Discord が自動作成した Entry Point コマンド
-    # (launch, type=7) は、一括上書きの payload に含めないと更新全体が
-    # 拒否される (400 / error 50240、2026-11-28 に /ban が未登録になった
-    # 原因)。discord.py 2.7 の tree は Entry Point を表現できないため、
-    # 登録済みのものを API から取得してそのまま payload へ含める。
+    # (launch, type=4, handler=2) は、一括上書きの payload に含めないと
+    # 更新全体が拒否される (400 / error 50240、2026-11-28 に /ban が
+    # 未登録になった原因)。discord.py 2.7 の tree は Entry Point を表現
+    # できないため、登録済みのものを API から取得してそのまま含める。
+    # type は実測で 4 (PRIMARY_ENTRY_POINT)。7 と誤認して 0 件になり
+    # 失敗したのが f2be562 までの経緯。
     tree = bot.tree
     app_id = bot.application_id
     existing = await bot.http.get_global_commands(app_id)
@@ -209,7 +211,7 @@ async def _bulk_sync() -> None:
     # Entry Point は取得したオブジェクトをそのまま (id 含む) 含める。
     # id を落とすと別コマンド扱いになり、既存の Entry Point が payload に
     # 無い = 削除とみなされて再び 50240 になる (c851cf8 の失敗)。
-    entry_points = [c for c in existing if c.get("type") == 7]
+    entry_points = [c for c in existing if c.get("type") == 4]
     payload.extend(entry_points)
     print(
         f"sync payload: {len(payload)} commands "
