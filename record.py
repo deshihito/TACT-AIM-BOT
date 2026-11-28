@@ -69,6 +69,10 @@ TEAM_COLOR_NAMES = {
     1: "red", 2: "orange", 3: "yellow", 4: "green",
     5: "cyan", 6: "blue", 7: "purple", 8: "magenta",
 }
+# 色相 (度)。描画用。
+TEAM_COLOR_HUES = {
+    1: 0, 2: 25, 3: 58, 4: 108, 5: 180, 6: 234, 7: 270, 8: 306,
+}
 
 
 @dataclass

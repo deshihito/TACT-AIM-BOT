@@ -138,9 +138,9 @@ def _to_px(x: int, y: int) -> tuple[float, float]:
 
 
 def render_map_png(players: list[PlayerRecord], tiles: list | None = None,
-                   project_id: str = "") -> bytes:
+                   project_id: str = "", names: dict | None = None) -> bytes:
     if tiles is not None:
-        return _render_with_tiles(players, tiles, project_id)
+        return _render_with_tiles(players, tiles, project_id, names)
     img = Image.new("RGB", (IMG_W, IMG_H), BG)
     d = ImageDraw.Draw(img)
     grid_font = _font(16)
@@ -158,14 +158,14 @@ def render_map_png(players: list[PlayerRecord], tiles: list | None = None,
         d.text((6, py + 4), str(gy), fill=SUBTEXT, font=grid_font)
         gy += 500
     d.rectangle([0, 0, IMG_W - 1, IMG_H - 1], outline=AXIS, width=2)
-    _draw_players(d, players, _to_px, IMG_W, IMG_H)
+    _draw_players(d, players, _to_px, IMG_W, IMG_H, names)
     buf = io.BytesIO()
     img.save(buf, format="PNG")
     return buf.getvalue()
 
 
 def _render_with_tiles(players: list[PlayerRecord], tiles: list,
-                       project_id: str = "") -> bytes:
+                       project_id: str = "", names: dict | None = None) -> bytes:
     w, h = 2000, 704
     to_px = _make_to_px(MAP_WORLD, w, h)
     img = Image.new("RGBA", (w, h), BG + (255,))
@@ -195,14 +195,25 @@ def _render_with_tiles(players: list[PlayerRecord], tiles: list,
                 fill=TILE_COLORS.get(typ, (100, 116, 139)),
             )
     d.rectangle([0, 0, w - 1, h - 1], outline=AXIS, width=2)
-    _draw_players(d, players, to_px, w, h)
+    _draw_players(d, players, to_px, w, h, names)
     buf = io.BytesIO()
     img.convert("RGB").save(buf, format="PNG")
     return buf.getvalue()
 
 
+def _team_rgb(team_color: int) -> tuple[int, int, int]:
+    import colorsys
+
+    from record import TEAM_COLOR_HUES
+
+    hue = TEAM_COLOR_HUES.get(team_color, 0)
+    r, g, b = colorsys.hsv_to_rgb(hue / 360, 0.75, 1.0)
+    return round(r * 255), round(g * 255), round(b * 255)
+
+
 def _draw_players(d: ImageDraw.ImageDraw, players: list[PlayerRecord], to_px,
-                  img_w: int, img_h: int) -> None:
+                  img_w: int, img_h: int, names: dict | None = None) -> None:
+    from record import TEAM_COLOR_NAMES
 
     label_font = _font(19)
     sub_font = _font(16)
@@ -236,10 +247,16 @@ def _draw_players(d: ImageDraw.ImageDraw, players: list[PlayerRecord], to_px,
         px, py = to_px(r.x, r.y)
         color = PALETTE[i % len(PALETTE)]
         if r.special_weapon:
-            d.ellipse([px - 16, py - 16, px + 16, py + 16], outline=(34, 197, 94), width=3)
+            d.ellipse([px - 17, py - 17, px + 17, py + 17], outline=(34, 197, 94), width=3)
+        if r.team_color:
+            d.ellipse([px - 13, py - 13, px + 13, py + 13],
+                      outline=_team_rgb(r.team_color), width=3)
         d.ellipse([px - 9, py - 9, px + 9, py + 9], fill=color, outline=(255, 255, 255), width=2)
-        title = f"{r.player_id} {r.character}"
-        w = d.textlength(title, font=label_font)
+        title = (names or {}).get(r.player_id) or f"ID {r.player_id}"
+        sub = f"{r.character} | HP {r.hp}/{r.max_hp}"
+        if r.team_color:
+            sub += f" | Team: {TEAM_COLOR_NAMES.get(r.team_color, r.team_color)}"
+        w = max(d.textlength(title, font=label_font), d.textlength(sub, font=sub_font))
         lx, ly = label_pos(px, py, w)
         d.text((lx, ly), title, fill=TEXT, font=label_font)
-        d.text((lx, ly + 22), f"HP {r.hp}/{r.max_hp}", fill=SUBTEXT, font=sub_font)
+        d.text((lx, ly + 22), sub, fill=SUBTEXT, font=sub_font)

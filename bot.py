@@ -440,27 +440,63 @@ async def tracker(interaction: discord.Interaction):
     await interaction.response.send_message(view=TrackerView(interaction.user.id))
 
 
+class MapView(discord.ui.LayoutView):
+    """マップ表示 (更新ボタン付き)。操作は実行者のみ。"""
+
+    def __init__(self, author_id: int):
+        super().__init__(timeout=300)
+        self.author_id = author_id
+        self.player_count = 0
+        self._build()
+
+    def _build(self):
+        self.clear_items()
+        refresh_btn = discord.ui.Button(
+            label="更新", style=discord.ButtonStyle.secondary,
+            custom_id="map_refresh",
+        )
+        refresh_btn.callback = self._refresh
+        self.add_item(
+            discord.ui.Container(
+                discord.ui.TextDisplay(f"**オンライン: {self.player_count}人**"),
+                discord.ui.MediaGallery(
+                    discord.MediaGalleryItem(
+                        media=discord.UnfurledMediaItem(url="attachment://map.png")
+                    )
+                ),
+                discord.ui.ActionRow(refresh_btn),
+                accent_colour=0x2F81F7,
+            )
+        )
+
+    async def render(self) -> discord.File:
+        players = sorted(cloud.online_players(), key=lambda r: r.player_id)
+        self.player_count = len(players)
+        tiles = tiles_for(cloud.project_id)
+        names = {r.player_id: cloud.full_name(r.player_id) for r in players}
+        png = await asyncio.to_thread(
+            render_map_png, players, tiles, cloud.project_id, names
+        )
+        self._build()
+        return discord.File(io.BytesIO(png), filename="map.png")
+
+    async def _refresh(self, interaction: discord.Interaction):
+        if interaction.user.id != self.author_id:
+            await interaction.response.send_message(
+                "このパネルはコマンド実行者だけが操作できます。", ephemeral=True
+            )
+            return
+        await interaction.response.defer()
+        file = await self.render()
+        await interaction.edit_original_response(attachments=[file], view=self)
+
+
 @bot.tree.command(name="map", description="プレイヤー配置マップ")
 async def map_cmd(interaction: discord.Interaction):
     await interaction.response.defer()
-    players = sorted(cloud.online_players(), key=lambda r: r.player_id)
-    tiles = tiles_for(cloud.project_id)
-    png = await asyncio.to_thread(render_map_png, players, tiles, cloud.project_id)
-    view = discord.ui.LayoutView(timeout=None)
-    view.add_item(
-        discord.ui.Container(
-            discord.ui.TextDisplay(f"**オンライン: {len(players)}人**"),
-            discord.ui.MediaGallery(
-                discord.MediaGalleryItem(
-                    media=discord.UnfurledMediaItem(url="attachment://map.png")
-                )
-            ),
-            accent_colour=0x2F81F7,
-        )
-    )
-    await interaction.followup.send(
-        view=view, file=discord.File(io.BytesIO(png), filename="map.png")
-    )
+    view = MapView(interaction.user.id)
+    file = await view.render()
+    await interaction.followup.send(view=view, file=file)
 
 
 @bot.tree.command(name="player", description="プレイヤー数の推移グラフ")
