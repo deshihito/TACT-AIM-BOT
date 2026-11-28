@@ -112,6 +112,8 @@ class PlayerRecord:
     blood_flag: str = ""  # blood版のみ: f61直後 'Blood Pico debuff?' の生値
     special_weapon: bool = False  # フィールド45: スペシャルウェポン所持
     team_color: int = 0  # フィールド28: 0=未所属、1..8=チームカラー
+    skill_type: str = ""  # 静的データ枠の種別 (2桁)。 "21" = 通報 (値は対象ID)
+    skill_value: str = ""  # 静的データ枠の値 (4桁)
 
     @property
     def active_shots(self) -> int:
@@ -198,8 +200,8 @@ def parse_record(value: str) -> PlayerRecord | None:
     c.take(7)  # f32
     c.take(1)  # f33
     chat_code = c.take(2)  # f34
-    c.take(2)  # スキル節: 種別
-    c.take(4)  # スキル節: 値
+    skill_type = c.take(2)  # 静的データ枠: 種別 (ローテーションで毎回変わる)
+    skill_value = c.take(4)  # 静的データ枠: 値
     c.take(1)  # f44: Turreting
     special_weapon = c.take(1) == "1"  # f45: Special weapon
     # [46] は静的データ経由 (ワイヤ上に独立フィールドなし)
@@ -231,6 +233,8 @@ def parse_record(value: str) -> PlayerRecord | None:
         max_hp=max_hp,
         attack=attack,
         chat_code=chat_code,
+        skill_type=skill_type,
+        skill_value=skill_value,
         skill_point=skill_point,
         vel_x=vel_x,
         vel_y=vel_y,
@@ -247,3 +251,18 @@ def seq_is_newer(new: int, old: int) -> bool:
     """seq (World_timer, 90000 ラップ) の鮮度判定。原作 Load cloud data と同じ式。"""
     diff = (new - old + 45000) % 89999 - 45000
     return diff >= 1
+
+
+def encode_name_chunk(username: str, position: int) -> str:
+    """ユーザー名の position 番目のチャンク (5文字) を符号化する。
+
+    decode_name_chunk の逆。範囲外の文字は詰め物 "00" (=) になる。
+    原作の送信側は User_ID (名前を4桁グループ×10に符号化したもの) から
+    1グループずつ抜いて送る (Pen_All/index.ts の Cloud_data 組み立て)。
+    """
+    codes = []
+    for i in (0, 1):
+        ch = username[position * 2 + i] if position * 2 + i < len(username) else ""
+        idx = _NAME_CHARS.find(ch) if ch else -1
+        codes.append(f"{idx + 11:02d}" if idx >= 0 else "00")
+    return codes[0] + codes[1] + str(position)

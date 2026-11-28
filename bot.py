@@ -1,7 +1,7 @@
 """TACT-AIM 独立 Discord Bot (テスト版)。
 
-役割は1つだけ: TurboWarp クラウド (TACT-AIM 16.9) を読み取り専用で
-スクレイピングし、Discord で情報を出す。チート検出・執行はしない。
+TurboWarp クラウド (TACT-AIM 16.9) をスクレイピングし、Discord で情報を出す。
+監視は読み取り専用。執行は /ban だけで、voter.py が Bot 自身の通報票を入れる。
 
 コマンド:
   !ta online      - 現在オンラインのプレイヤー一覧 (全員)
@@ -11,6 +11,8 @@
                     フェス時間に自動で切り替わる (原作のフェス判定に従う)。
                     フェスは同時に1つだけ。入れるたびに前の登録と入れ替わる。
   /festival_clear - フェス登録を解除し、通常の TACT-AIM へ戻す (管理者専用)
+  /ban            - 通報票が溜まった相手に Bot の票を加えて排除 (管理者専用)
+  /unban          - /ban の解除 (管理者専用)
   /map            - プレイヤー配置マップ (PNG、Components V2)
   /tracker        - プレイヤー戦績トラッカー (ページ切替、Components V2)
 
@@ -35,6 +37,7 @@ from cloud import CLOUD_VARS, EXTRA_VARS, PROJECT_ID, TactAimCloud
 from festival import is_festival
 from graph_render import render_trend_png
 from history import History, data_dir
+from voter import VoterManager, votes_needed
 from map_data import tiles_for
 from map_render import render_map_png
 from record import TEAM_COLOR_NAMES
@@ -51,6 +54,7 @@ if not _history_path.exists() and _legacy_path.exists():
 history = History(_history_path)
 
 cloud = TactAimCloud()
+voter = VoterManager(cloud)
 
 # 管理者 (Discord ユーザーID)。特定コマンド (raw 等) はこのIDだけが実行できる。
 ADMIN_IDS = {
@@ -106,6 +110,8 @@ def desired_target() -> str:
 async def apply_target() -> None:
     target = desired_target()
     if cloud.project_id != target:
+        # プレイヤーIDはプロジェクト単位なので、切替時に BAN は全解除する
+        await voter.stop_all()
         await cloud.set_project(target)
         print(f"Auto switch: scraping target -> {target}")
 
@@ -341,6 +347,142 @@ async def festival_clear(interaction: discord.Interaction):
     await apply_target()
     await interaction.response.send_message(
         f"フェス登録を解除しました。通常の TACT-AIM ({PROJECT_ID}) に戻ります。"
+    )
+
+
+# --- /ban と /unban (管理者専用、voter.py が執行) ---
+
+def _resolve_by_name(name: str):
+    """表示名 (復元済みの正式名) からプレイヤーを引く。
+
+    戻り値: (対象レコード | None, 候補リスト)。
+    完全一致 → 大小文字を無視した完全一致 → 部分一致の順で探し、
+    一意に定まったときだけ対象を返す。
+    """
+    named = []
+    for rec in cloud.players.values():
+        full = cloud.full_name(rec.player_id)
+        if full:
+            named.append((full, rec))
+    exact = [rec for full, rec in named if full == name]
+    if exact:
+        return exact[0], exact
+    lower = name.lower()
+    ci = [rec for full, rec in named if full.lower() == lower]
+    if len(ci) == 1:
+        return ci[0], ci
+    if len(ci) > 1:
+        return None, ci
+    partial = [rec for full, rec in named if lower in full.lower()]
+    if len(partial) == 1:
+        return partial[0], partial
+    return None, partial
+
+
+def _candidate_lines(candidates) -> str:
+    lines = []
+    for rec in candidates[:10]:
+        full = cloud.full_name(rec.player_id) or "?"
+        lines.append(f"- {full} (ID {rec.player_id})")
+    return "\n".join(lines)
+
+
+@bot.tree.command(
+    name="ban",
+    description="通報票が成立直前の相手に Bot の票を加えて排除する (管理者専用)",
+)
+@app_commands.describe(name="表示プレイヤー名 (正式なユーザー名)")
+async def ban(interaction: discord.Interaction, name: str):
+    if not is_admin(interaction.user.id):
+        await interaction.response.send_message(
+            "このコマンドは管理者専用です。", ephemeral=True
+        )
+        return
+    rec, candidates = _resolve_by_name(name)
+    if rec is None:
+        if candidates:
+            await interaction.response.send_message(
+                "対象が一意に定まりません。候補:\n" + _candidate_lines(candidates),
+                ephemeral=True,
+            )
+        else:
+            await interaction.response.send_message(
+                f"「{name}」という表示名のプレイヤーが見つかりません。"
+                "名前は観測できたプレイヤーだけが対象です (/tracker で確認)。",
+                ephemeral=True,
+            )
+        return
+    display = cloud.full_name(rec.player_id) or rec.player_id
+    if voter.is_banning(rec.player_id):
+        await interaction.response.send_message(
+            f"{display} (ID {rec.player_id}) は既に BAN 中です。", ephemeral=True
+        )
+        return
+    # 前提条件: ゲーム内の通報票が「Bot の1票で成立数に届く」ところまで
+    # 溜まっているときだけ使える (合意なき単独執行はしない)。
+    active = len(cloud.online_players())
+    needed = votes_needed(active)
+    if needed is None:
+        await interaction.response.send_message(
+            f"現在 {active} 人しかおらず、ゲーム内の通報が成立しません"
+            " (成立は6人以上)。",
+            ephemeral=True,
+        )
+        return
+    votes = cloud.report_votes(rec.player_id)
+    if votes < needed - 1:
+        await interaction.response.send_message(
+            f"通報票が不足しています: {display} (ID {rec.player_id}) は現在 "
+            f"{votes} 票。/ban には {needed - 1} 票 (Bot の票で成立数 "
+            f"{needed} 票に到達) が必要です。",
+            ephemeral=True,
+        )
+        return
+    await voter.start_ban(rec.player_id)
+    await interaction.response.send_message(
+        f"BAN開始: {display} (ID {rec.player_id})\n"
+        f"通報票 {votes} 票に Bot の票を加え、成立数 {needed} 票に到達します。"
+        "各クライアントで CSPID 入りし、順次停止します (反映まで数秒)。\n"
+        "Bot が票を入れ続ける間は停止が維持されます。解除は /unban"
+        " (Bot 再起動でも全解除されます)。"
+    )
+
+
+@bot.tree.command(
+    name="unban",
+    description="指定プレイヤーの BAN を解除する (管理者専用)",
+)
+@app_commands.describe(name="表示プレイヤー名 (正式なユーザー名)")
+async def unban(interaction: discord.Interaction, name: str):
+    if not is_admin(interaction.user.id):
+        await interaction.response.send_message(
+            "このコマンドは管理者専用です。", ephemeral=True
+        )
+        return
+    rec, candidates = _resolve_by_name(name)
+    if rec is None:
+        if candidates:
+            await interaction.response.send_message(
+                "対象が一意に定まりません。候補:\n" + _candidate_lines(candidates),
+                ephemeral=True,
+            )
+        else:
+            await interaction.response.send_message(
+                f"「{name}」という表示名のプレイヤーが見つかりません。",
+                ephemeral=True,
+            )
+        return
+    display = cloud.full_name(rec.player_id) or rec.player_id
+    if not await voter.stop_ban(rec.player_id):
+        await interaction.response.send_message(
+            f"{display} (ID {rec.player_id}) は BAN されていません。",
+            ephemeral=True,
+        )
+        return
+    await interaction.response.send_message(
+        f"BAN解除: {display} (ID {rec.player_id})\n"
+        "Bot の票が抜けるため、票数が成立数を下回れば CSPID が解け、"
+        "対象は復帰します (CSPID の定期消去のタイミングにもよります)。"
     )
 
 

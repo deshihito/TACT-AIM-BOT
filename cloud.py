@@ -51,6 +51,11 @@ class TactAimCloud:
         self.stats = StatsTracker()
         # 名前チャンクの蓄積: {player_id: {位置: 2文字}}。集まると正式名になる
         self._name_chunks: dict[str, dict[int, str]] = {}
+        # 通報票の集計: {対象ID: {投票者ID: 最終観測時刻 (monotonic)}}。
+        # 原作では静的データ枠 kind21 を受信したクライアントが送信者を
+        # 投票者として Blocked player に記録する (9000フレームで失効)。
+        # ここでも同じ票を数え、/ban の前提条件に使う。
+        self._reports: dict[str, dict[str, float]] = {}
 
     def _note_name(self, rec: PlayerRecord) -> None:
         if rec.name_index is not None:
@@ -92,6 +97,7 @@ class TactAimCloud:
         self.seen_lengths.clear()
         self.stats.reset()
         self._name_chunks.clear()
+        self._reports.clear()
         ws, self._ws = self._ws, None
         if ws is not None:
             try:
@@ -129,10 +135,38 @@ class TactAimCloud:
         if old is None or seq_is_newer(rec.seq, old.seq):
             self.stats.observe(old, rec)
             self._note_name(rec)
+            self._note_report(rec)
             self.players[rec.player_id] = rec
             self._seen_at[rec.player_id] = time.monotonic()
         elif old is not None and rec.seq == old.seq:
             self._seen_at[rec.player_id] = time.monotonic()
+
+    def _note_report(self, rec: PlayerRecord) -> None:
+        # 静的データ枠 kind21 = 通報。値が対象プレイヤーの ID (4桁)。
+        # 自分自身への通報は数えない (原作でも成立しない)。
+        if rec.skill_type != "21":
+            return
+        target = rec.skill_value
+        # 値 "0000" は Menu[85] の未設定値 (通報していない) なので票ではない。
+        # 原作の受信側ゲートも "0000" を除外している。
+        if (
+            len(target) != 4
+            or not target.isdigit()
+            or target == "0000"
+            or target == rec.player_id
+        ):
+            return
+        self._reports.setdefault(target, {})[rec.player_id] = time.monotonic()
+
+    def report_votes(self, target_id: str, window: float = 300.0) -> int:
+        """対象への通報票数 (直近 window 秒以内に観測した distinct な投票者)。
+
+        原作の Blocked player は 9000 フレーム (30fps で約300秒) で失効し、
+        新しい通報レコードが来るたびにタイマが戻る。それに合わせた窓。
+        """
+        now = time.monotonic()
+        voters = self._reports.get(target_id, {})
+        return sum(1 for ts in voters.values() if now - ts <= window)
 
     async def _connect_once(self) -> None:
         async with websockets.connect(
