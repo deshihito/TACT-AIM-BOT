@@ -134,11 +134,22 @@ def _base_path() -> str:
 async def _no_cache(request: web.Request, handler):
     # Discord アクティビティの WebView は静的ファイルを強くキャッシュし、
     # デプロイ後も古い app.js を出し続けることがある (2026-11-28 の実害)。
-    # 全応答に no-cache を付け、ETag/Last-Modified で再検証させる
-    # (変更がなければ 304 で済むので転送量は増えない)。
+    # no-cache (再検証) でも iOS の WebView が古い版を出し続けたため、
+    # 全応答に no-store を付けて保存自体を禁止する。ファイルは小さいので
+    # 毎回取得でも問題ない。
     response = await handler(request)
-    response.headers["Cache-Control"] = "no-cache"
+    response.headers["Cache-Control"] = "no-store"
     return response
+
+
+async def _index_handler(request: web.Request) -> web.Response:
+    # app.js の URL に更新時刻のバージョンを付け、キャッシュキーごと
+    # 変える。ヘッダーを無視するキャッシュ (WebView / プロキシ) でも
+    # デプロイのたびに別 URL になるため、古い版が残らない。
+    html = (BASE / "index.html").read_text(encoding="utf-8")
+    version = int((BASE / "app.js").stat().st_mtime)
+    html = html.replace('src="app.js"', f'src="app.js?v={version}"')
+    return web.Response(text=html, content_type="text/html")
 
 
 async def start_server(cloud: TactAimCloud, client_id: str = "") -> web.AppRunner:
@@ -156,7 +167,7 @@ async def start_server(cloud: TactAimCloud, client_id: str = "") -> web.AppRunne
             raise web.HTTPMovedPermanently(f"{base}/")
 
         app.router.add_get(base, _to_slash)
-    app.router.add_get(f"{base}/", lambda req: web.FileResponse(BASE / "index.html"))
+    app.router.add_get(f"{base}/", _index_handler)
     app.router.add_static(f"{base}/", BASE, show_index=False)
     runner = web.AppRunner(app)
     await runner.setup()
