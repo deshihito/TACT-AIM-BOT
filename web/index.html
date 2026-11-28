@@ -14,11 +14,23 @@
     background: rgba(13, 17, 23, .55); padding: 6px 10px; border-radius: 8px;
   }
   #hud .sub { color: #94a3b8; font-size: 12px; }
+  #menubtn {
+    position: fixed; top: 10px; right: 12px; width: 40px; height: 40px;
+    display: flex; flex-direction: column; align-items: center;
+    justify-content: center; gap: 5px;
+    background: rgba(13, 17, 23, .55); border: 1px solid rgba(255, 255, 255, .18);
+    border-radius: 10px; cursor: pointer; padding: 0;
+  }
+  #menubtn span {
+    display: block; width: 18px; height: 2px; background: #e2e8f0;
+    border-radius: 1px;
+  }
   #players {
-    position: fixed; top: 10px; right: 12px; display: flex;
-    flex-direction: column; gap: 6px; max-height: calc(100vh - 20px);
+    position: fixed; top: 58px; right: 12px; display: none;
+    flex-direction: column; gap: 6px; max-height: calc(100vh - 76px);
     overflow-y: auto; font: 13px/1.4 system-ui, sans-serif;
   }
+  #players.open { display: flex; }
   #players .chip {
     background: rgba(13, 17, 23, .55); color: #e2e8f0;
     border: 1px solid rgba(255, 255, 255, .18); border-radius: 999px;
@@ -47,6 +59,7 @@
   <div><b id="title">TACT-AIM</b> <span id="count"></span></div>
   <div class="sub" id="state">接続中…</div>
 </div>
+<button id="menubtn" type="button" aria-label="プレイヤー一覧"><span></span><span></span><span></span></button>
 <div id="players"></div>
 <div id="followbar"><span id="followname"></span><button id="followexit" type="button">全体表示</button></div>
 <script type="module" src="app.js"></script>

@@ -39,6 +39,7 @@ const hudTitle = document.getElementById("title");
 const hudCount = document.getElementById("count");
 const hudState = document.getElementById("state");
 const playersEl = document.getElementById("players");
+const menuBtn = document.getElementById("menubtn");
 const followbar = document.getElementById("followbar");
 const followName = document.getElementById("followname");
 const followExit = document.getElementById("followexit");
@@ -204,20 +205,23 @@ function drawTile(g, images, manifest, tile) {
 // 本家風の床: 白地に 50ユニット (1マス) 間隔のグリッド線。
 // 範囲はワールド座標 [wx0, wx1] × [wy0, wy1]、線幅は呼び出し側の単位で指定。
 function drawFloor(g, wx0, wy0, wx1, wy1, lineWidth) {
+  // 床は原作の背景 (Stage の "Normal") の単色 #999999。グリッド線は
+  // 原作 Draw_square と同じくマスの境界 (中心 gx*50 から 25 ずれた位置)
+  // に引く。中心に引くとタイルと半マスずれて見える。
   const [px0, py1] = toPx(wx0, wy0);
   const [px1, py0] = toPx(wx1, wy1);
-  g.fillStyle = "#ffffff";
+  g.fillStyle = "#999999";
   g.fillRect(px0, py0, px1 - px0, py1 - py0);
   g.strokeStyle = "#b5b5b5";
   g.lineWidth = lineWidth;
   g.beginPath();
-  for (let gx = Math.ceil(wx0 / 50); gx * 50 <= wx1; gx++) {
-    const [x] = toPx(gx * 50, 0);
+  for (let bx = Math.ceil((wx0 + 25) / 50) * 50 - 25; bx <= wx1; bx += 50) {
+    const [x] = toPx(bx, 0);
     g.moveTo(x, py0);
     g.lineTo(x, py1);
   }
-  for (let gy = Math.ceil(wy0 / 50); gy * 50 <= wy1; gy++) {
-    const [, y] = toPx(0, gy * 50);
+  for (let by = Math.ceil((wy0 + 25) / 50) * 50 - 25; by <= wy1; by += 50) {
+    const [, y] = toPx(0, by);
     g.moveTo(px0, y);
     g.lineTo(px1, y);
   }
@@ -1106,6 +1110,9 @@ function drawPlayers(now, positions) {
 
 // ---------- プレイヤー選択 (フォロー) ----------
 
+// 一覧はハンバーガーメニュー内にしまう (常時表示だと観戦の邪魔)。
+menuBtn.addEventListener("click", () => playersEl.classList.toggle("open"));
+
 function renderPlayerList() {
   playersEl.innerHTML = "";
   if (!curSnap) return;
@@ -1114,7 +1121,10 @@ function renderPlayerList() {
     b.type = "button";
     b.className = "chip" + (p.id === followId ? " active" : "");
     b.textContent = p.name || `ID ${p.id}`;
-    b.addEventListener("click", () => setFollow(p.id === followId ? null : p.id));
+    b.addEventListener("click", () => {
+      setFollow(p.id === followId ? null : p.id);
+      playersEl.classList.remove("open");
+    });
     playersEl.appendChild(b);
   }
 }
