@@ -30,9 +30,20 @@ MAPS_JSON = Path(__file__).with_name("maps.json")
 _clients: set[web.WebSocketResponse] = set()
 
 
+def _raw_int(raw: str, start: int, end: int) -> int:
+    try:
+        return int(raw[start:end])
+    except ValueError:
+        return 0
+
+
 def snapshot(cloud: TactAimCloud) -> dict:
     players = []
     for r in sorted(cloud.online_players(), key=lambda p: p.player_id):
+        # 描画・弾再現に要るが PlayerRecord に残らないフィールドは raw から切る
+        # (オフセットは record.py のカーソル順と一致。blood 版の追加1文字は
+        # 末尾側なので、ここで使う範囲は両形式で共通)。
+        raw = r.raw
         players.append(
             {
                 "id": r.player_id,
@@ -45,6 +56,20 @@ def snapshot(cloud: TactAimCloud) -> dict:
                 "sp": r.special_weapon,
                 "tc": r.team_color,
                 "team": r.team_id,
+                # 原作のプレイヤー描画 (draw.ts) と発射再現に使う追加情報
+                "mo": r.motion,  # [向き, 手1オフセットx/y, 手1向き, 手2オフセットx/y, 手2向き]
+                "shots": r.shots,  # 発射パック (7文字) のリスト
+                "vx": r.vel_x,
+                "vy": r.vel_y,
+                "wpn": max(0, _raw_int(raw, 113, 116) - 100),  # f17: 現在の武器 (Weapon name の1始まり番号、0=なし)
+                "nh": raw[112:113] == "0",  # f16: 被弾対象になるか (Search first の候補条件)
+                "b18": raw[116:117] == "1",  # f18: マゼンタ円のバフ表示
+                "skin": raw[186:187] == "1",  # f25: "+" コスチュームを使うか
+                "sc": raw[187:188] == "1",  # f26: スコープ中 (拡散の +25 補正条件)
+                "atk": raw[188:189] == "1",  # f27: 攻撃中 (物理武器の振り表示)
+                "chat": raw[205:206] == "1",  # f33: チャット入力中バー
+                "buf": _raw_int(raw, 228, 229),  # f52: バフアイコン数
+                "deb": _raw_int(raw, 229, 230),  # f53: デバフアイコン数
             }
         )
     return {
