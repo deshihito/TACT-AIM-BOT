@@ -128,5 +128,5 @@ async def start_server(cloud: TactAimCloud, client_id: str = "") -> web.AppRunne
     site = web.TCPSite(runner, "0.0.0.0", port)
     await site.start()
     app["broadcast_task"] = asyncio.create_task(_broadcast_loop(app))
-    print(f"Activity server listening on :{port}")
+    print(f"Activity server listening on :{port}", flush=True)
     return runner

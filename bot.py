@@ -168,21 +168,44 @@ _tree_synced = False
 _activity_started = False
 
 
+async def _start_activity_server() -> None:
+    # 内蔵サーバーは tree.sync() 等の Discord API の完了を待たずに起動する。
+    # (2026-11-28 の障害: sync が長時間戻らず、後段のサーバー起動に永遠に
+    # 到達しなかった)。失敗してもリトライし、Bot 本体は止めない。
+    import activity_server
+
+    for attempt in range(10):
+        try:
+            await activity_server.start_server(cloud, str(bot.user.id))
+            return
+        except Exception as e:
+            print(
+                f"activity server failed to start ({attempt + 1}/10): {e}",
+                flush=True,
+            )
+            await asyncio.sleep(15)
+
+
+async def _sync_tree() -> None:
+    # グローバルコマンドの sync はレート制限 (429 の retry_after) で長時間
+    # 戻らないことがあるため、背景でタイムアウト付きで実行する。
+    try:
+        await asyncio.wait_for(bot.tree.sync(), timeout=120)
+        print("tree synced", flush=True)
+    except Exception as e:
+        print(f"tree sync failed/timed out: {e}", flush=True)
+
+
 @bot.event
 async def on_ready():
     global _tree_synced, _activity_started
-    print(f"Logged in as {bot.user}")
-    if not _tree_synced:
-        await bot.tree.sync()
-        _tree_synced = True
+    print(f"Logged in as {bot.user}", flush=True)
     if not _activity_started:
         _activity_started = True
-        try:
-            import activity_server
-
-            await activity_server.start_server(cloud, str(bot.user.id))
-        except Exception as e:
-            print(f"activity server failed to start: {e}")
+        asyncio.create_task(_start_activity_server())
+    if not _tree_synced:
+        _tree_synced = True
+        asyncio.create_task(_sync_tree())
     if not update_presence.is_running():
         update_presence.start()
     if not sample_history.is_running():
