@@ -114,20 +114,24 @@ crontab への登録、luna が `tact-aim-bot` の再起動だけをパスワー
 ## リアルタイム観戦アクティビティ
 
 Bot プロセスが HTTP サーバー (環境変数 `ACTIVITY_PORT`、既定 8765) を立て、
-`web/` の観戦ページと WebSocket 配信 (`/ws`、0.5秒間隔のスナップショット) を
-提供する。Discord 側の手順:
+`web/` の観戦ページとスナップショット配信を提供する。配信は HTTP の
+`/snapshot` (クライアントが 0.5 秒ごとにポーリング) が正で、WebSocket
+(`/ws`) も併設する。Discord 側の手順:
 
-1. Developer Portal → 対象アプリ → **Activities** を有効化
+1. Developer Portal → 対象アプリ → **Activities** を有効化し、
+   対応プラットフォーム (Web / iOS / Android) をすべて有効化
 2. **URL Mappings** で `/` → 公開URL (下記) を設定
 3. サーバーで `/watch` を実行するとアクティビティ招待リンクが投稿される
 
 公開URLは Pi のサーバーへ HTTPS で届く必要がある。本番は agobot.app 配下の
-独立パス `/tact-aim` で公開する (AGO 本体のページとは無関係):
+独立パス `/tact-aim` で公開する (AGO 本体のページとは無関係)。経路は
+Cloudflare Tunnel → AGO の Web アプリ (Next.js) が担い、Web アプリ側の
+`next.config.mjs` の rewrites が `/tact-aim` 以下をこのサーバー
+(`http://localhost:8765`) へ中継する。WebSocket はリライト中継できないため
+クライアントは `/snapshot` ポーリングを使う:
 
 1. Pi の `.env` に `ACTIVITY_BASE=/tact-aim` を追加して Bot を再起動
-2. Cloudflare Zero Trust → Networks → Tunnels → 対象トンネル → Public Hostname に
-   追加: Subdomain 空欄 / Domain `agobot.app` / Path `tact-aim*` →
-   Service `http://localhost:8765` (既存の agobot.app 行より先に評価されること)
+2. Cloudflare 側は tact-aim の経路を Web アプリ行きで登録 (設定済み)
 3. Developer Portal の URL Mappings で `/` → `https://agobot.app/tact-aim` を設定
 
 手軽に試すだけなら cloudflared のクイックトンネルでもよい:

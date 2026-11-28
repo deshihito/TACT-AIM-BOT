@@ -1,13 +1,15 @@
 """Discord アクティビティ (リアルタイム観戦) 用の配信サーバー。
 
 Bot プロセス内で aiohttp サーバーを立て、web/ の静的ファイルと
-assets/・maps.json を配信し、WebSocket (/ws) でプレイヤーの
-スナップショットを 0.5 秒ごとに流す。観戦専用で認証は無い。
+assets/・maps.json を配信し、プレイヤーのスナップショットを
+WebSocket (/ws) と HTTP (/snapshot) で流す。観戦専用で認証は無い。
 
 公開方法 (Discord Developer Portal の URL マッピング先) は README 参照。
 ポートは環境変数 ACTIVITY_PORT (既定 8765)。
 agobot.app 配下の独立パスで公開する場合は ACTIVITY_BASE=/tact-aim のように
-ベースパスを設定する (Cloudflare Tunnel のパスルーティングで振り分ける)。
+ベースパスを設定する (AGO の Web アプリが /tact-aim をこのサーバーへ
+リライトで中継する。WebSocket は中継できないため、公開経由のクライアントは
+/snapshot をポーリングする)。
 """
 from __future__ import annotations
 
@@ -90,6 +92,12 @@ async def _config_handler(request: web.Request) -> web.Response:
     return web.json_response({"client_id": request.app.get("client_id", "")})
 
 
+async def _snapshot_handler(request: web.Request) -> web.Response:
+    # WebSocket を中継できない公開経路 (AGO Web のリライト) 用の HTTP 版。
+    # クライアントが 0.5 秒ごとに取得し、スナップショット間を補間する。
+    return web.json_response(snapshot(request.app["cloud"]))
+
+
 def _base_path() -> str:
     base = os.environ.get("ACTIVITY_BASE", "").strip()
     if not base:
@@ -103,6 +111,7 @@ async def start_server(cloud: TactAimCloud, client_id: str = "") -> web.AppRunne
     app["client_id"] = client_id
     base = _base_path()
     app.router.add_get(f"{base}/config.json", _config_handler)
+    app.router.add_get(f"{base}/snapshot", _snapshot_handler)
     app.router.add_get(f"{base}/ws", _ws_handler)
     app.router.add_static(f"{base}/assets/", ASSETS, show_index=False)
     app.router.add_get(f"{base}/maps.json", lambda req: web.FileResponse(MAPS_JSON))

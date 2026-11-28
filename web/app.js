@@ -1,6 +1,6 @@
 // TACT-AIM リアルタイム観戦クライアント。
 // 地形は /map (map_render.py) と同じ素材・規則でオフスクリーンに事前描画し、
-// プレイヤーは WebSocket のスナップショット間を補間して毎フレーム描く。
+// プレイヤーは /snapshot のスナップショット間を補間して毎フレーム描く。
 
 const MAP_WORLD = [-1500, -1100, 4750, 1100];
 const VW = 2000, VH = 704;
@@ -179,28 +179,35 @@ function frame(now) {
 }
 requestAnimationFrame(frame);
 
-function connect() {
-  const url = new URL("ws", location.href);
-  url.protocol = url.protocol.replace("http", "ws");
-  const ws = new WebSocket(url);
-  ws.onopen = () => { hudState.textContent = "接続中"; };
-  ws.onmessage = async (ev) => {
-    const snap = JSON.parse(ev.data);
-    if (snap.type !== "state") return;
-    prevSnap = curSnap; prevAt = curAt;
-    curSnap = snap; curAt = performance.now();
-    hudTitle.textContent = snap.festival ? "TACT-AIM blood (フェス)" : "TACT-AIM";
-    hudCount.textContent = `オンライン: ${snap.players.length}人`;
-    hudState.textContent = "";
-    await buildTerrain(snap.project, snap.map);
-  };
-  ws.onclose = () => {
-    hudState.textContent = "切断されました。再接続します…";
-    setTimeout(connect, 3000);
-  };
-  ws.onerror = () => ws.close();
+async function handleSnap(snap) {
+  if (snap.type !== "state") return;
+  prevSnap = curSnap; prevAt = curAt;
+  curSnap = snap; curAt = performance.now();
+  hudTitle.textContent = snap.festival ? "TACT-AIM blood (フェス)" : "TACT-AIM";
+  hudCount.textContent = `オンライン: ${snap.players.length}人`;
+  hudState.textContent = "";
+  await buildTerrain(snap.project, snap.map);
 }
-connect();
+
+// 公開経路 (AGO Web のリライト中継) は WebSocket を通せないため、
+// /snapshot を 0.5 秒ごとにポーリングし、変化があった時だけ反映する。
+let lastPayload = "";
+async function poll() {
+  try {
+    const res = await fetch("snapshot", { cache: "no-store" });
+    if (!res.ok) throw new Error(res.status);
+    const text = await res.text();
+    if (text !== lastPayload) {
+      lastPayload = text;
+      await handleSnap(JSON.parse(text));
+    }
+  } catch {
+    hudState.textContent = "切断されました。再接続します…";
+  } finally {
+    setTimeout(poll, 500);
+  }
+}
+poll();
 
 // Discord アクティビティとして開かれた場合の ready ハンドシェイク (任意)。
 (async () => {
