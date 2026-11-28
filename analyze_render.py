@@ -245,7 +245,7 @@ def render_analyze_png(a: dict) -> bytes:
 
     d.text(
         (MARGIN, 1398),
-        "データは Bot が観測した範囲のみ。戦闘力は連携プレイヤー全体との相対評価 (母数が少ない場合は固定基準)。",
+        "データは Bot が観測した範囲のみ。戦闘力は連携プレイヤーとの相対評価と絶対基準の合成 (同点は中位)。",
         fill=SUBTEXT,
         font=_font(16),
     )

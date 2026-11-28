@@ -37,7 +37,7 @@ def test_sample_and_analyze(tmp_path):
     assert a["heat_max"] == 30
     assert a["top_zones"]  # バトルエリアのゾーン集計がある
     assert 0 <= a["power_score"] <= 100
-    assert set(a["power"]) == {"火力", "撃破", "生存", "積極性", "活動量"}
+    assert set(a["power"]) == {"エイム", "火力", "キル効率", "生存", "立ち回り", "積極性"}
 
 
 def test_kill_damage_events(tmp_path):
@@ -51,6 +51,7 @@ def test_kill_damage_events(tmp_path):
     assert (a["kills"], a["deaths"]) == (2, 1)
     assert a["kd"] == 2.0
     assert a["damage"] == 120
+    assert a["hits"] == 1  # record_damage は命中1件ごとに呼ばれる
     assert s.analyze("Foe")["deaths"] == 2
 
 
@@ -64,10 +65,50 @@ def test_percentile_population(tmp_path):
         _sample(s, name="Outsider")
     s.record_damage("Outsider", 10**7, now=1001.0)
     pop = {f"linked{j}" for j in range(8)}
-    # 母数を連携8人に限ると linked3 は 4/8 = 50
-    assert s.analyze("linked3", pop)["power"]["火力"] == 50.0
-    # 母数を全員 (9人) にすると巨大ダメージの部外者が入って 4/9 になる
-    assert abs(s.analyze("linked3")["power"]["火力"] - 400 / 9) < 0.01
+    # linked3 の火力: 生指標は 1050/0.25=4200/時。絶対 (飽和1500) = 73.7、
+    # mid-rank は (3 + 0.5) / 8 = 43.75、母数8の重み 8/12 で合成
+    linked = s.analyze("linked3", pop)["power"]["火力"]
+    assert abs(linked - (8 / 12 * 43.75 + 4 / 12 * 4200 / 5700 * 100)) < 0.1
+    # 母数に巨大ダメージの部外者が入ると相対順位が下がる
+    assert s.analyze("linked3")["power"]["火力"] < linked
+
+
+def test_tied_zero_scores_not_inflated(tmp_path):
+    """全員 0 ダメ同点でも火力/エイムが上位に張り付かない (旧 <= 方式の回帰)。"""
+    s = BehaviorStore(tmp_path / "b.json")
+    for j in range(8):
+        for _ in range(30):
+            _sample(s, name=f"p{j}")
+    a = s.analyze("p0", {f"p{j}" for j in range(8)})
+    # mid-rank は同点全員 50、絶対基準は 0 → 合成は 50 * 8/12 = 33.3
+    assert a["power"]["火力"] < 40
+    assert a["power"]["エイム"] < 40
+
+
+def test_power_spread_by_playstyle(tmp_path):
+    """プレイスタイルが違えばスコアが分かれる (全員同じ感じの回帰防止)。"""
+    s = BehaviorStore(tmp_path / "b.json")
+    # ロビー待機: 30回、移動なし・戦績なし
+    for i in range(30):
+        _sample(s, name="Idle", x=100, hp_ratio=1.0, now=1000.0 + i * 10)
+    #  roaming 戦闘: 30回、毎回大きく移動しながら別セルを踏む
+    for i in range(30):
+        _sample(
+            s, name="Roamer", x=600 + (i % 10) * 600, y=-1000 + (i // 10) * 900,
+            hp_ratio=0.6, now=1000.0 + i * 10,
+        )
+    for _ in range(40):
+        s.record_damage("Roamer", 50, now=2000.0)
+    for _ in range(10):
+        s.record_kill("Roamer", "Idle", now=2000.0)
+    idle = s.analyze("Idle")
+    roamer = s.analyze("Roamer")
+    assert roamer["power_score"] > idle["power_score"] + 20
+    assert roamer["power"]["立ち回り"] > idle["power"]["立ち回り"] + 30
+    assert roamer["power"]["エイム"] > idle["power"]["エイム"]
+    assert roamer["power"]["キル効率"] > idle["power"]["キル効率"]
+    # 待機組の生存は満点に張り付かない (同点 mid-rank + HP のみ)
+    assert idle["power"]["生存"] < 100
 
 
 def test_unknown_player(tmp_path):
