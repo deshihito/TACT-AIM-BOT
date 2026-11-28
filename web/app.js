@@ -1222,16 +1222,20 @@ async function handleSnap(snap) {
   prevSnap = curSnap; prevAt = curAt;
   curSnap = snap; curAt = performance.now();
   simPlayers = snap.players;
-  // フォロー対象が退出したら全体表示に戻し、一覧と追随表示を同期する
+  // フォロー対象が退出したら全体表示に戻し、一覧と追随表示を同期する。
+  // setFollow は使わず冪等に直接書き換える (毎回の再構築で表示が
+  // ちらつき、ボタン操作と競合するため)。
   if (followId !== null && !snap.players.some((p) => p.id === followId)) {
     followId = null;
   }
   if (followId === null) {
     followbar.style.display = "none";
-    renderPlayerList();
   } else {
-    setFollow(followId);
+    const p = snap.players.find((pl) => pl.id === followId);
+    followName.textContent = `${p?.name || `ID ${followId}`} の視点`;
+    followbar.style.display = "flex";
   }
+  renderPlayerList();
   hudTitle.textContent = snap.festival ? "TACT-AIM blood (フェス)" : "TACT-AIM";
   hudCount.textContent = `オンライン: ${snap.players.length}人`;
   hudState.textContent = "";
