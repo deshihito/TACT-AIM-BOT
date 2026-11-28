@@ -165,15 +165,24 @@ async def on_command_error(ctx, error):
 
 
 _tree_synced = False
+_activity_started = False
 
 
 @bot.event
 async def on_ready():
-    global _tree_synced
+    global _tree_synced, _activity_started
     print(f"Logged in as {bot.user}")
     if not _tree_synced:
         await bot.tree.sync()
         _tree_synced = True
+    if not _activity_started:
+        _activity_started = True
+        try:
+            import activity_server
+
+            await activity_server.start_server(cloud, str(bot.user.id))
+        except Exception as e:
+            print(f"activity server failed to start: {e}")
     if not update_presence.is_running():
         update_presence.start()
     if not sample_history.is_running():
@@ -497,6 +506,38 @@ async def map_cmd(interaction: discord.Interaction):
     view = MapView(interaction.user.id)
     file = await view.render()
     await interaction.followup.send(view=view, file=file)
+
+
+@bot.tree.command(name="watch", description="アクティビティでリアルタイム観戦")
+async def watch_cmd(interaction: discord.Interaction):
+    if interaction.channel is None:
+        await interaction.response.send_message(
+            "チャンネル内で実行してください。", ephemeral=True
+        )
+        return
+    try:
+        invite = await interaction.channel.create_invite(
+            target_type=discord.InviteTarget.embedded_application,
+            target_application_id=bot.user.id,
+            reason="TACT-AIM リアルタイム観戦",
+        )
+    except (discord.Forbidden, discord.HTTPException) as e:
+        await interaction.response.send_message(
+            f"招待を作成できませんでした ({e})。Developer Portal で "
+            "Activities の有効化と URL マッピングが必要です。",
+            ephemeral=True,
+        )
+        return
+    view = discord.ui.LayoutView(timeout=None)
+    view.add_item(
+        discord.ui.Container(
+            discord.ui.TextDisplay(
+                f"**リアルタイム観戦**\n[アクティビティを開く]({invite.url})"
+            ),
+            accent_colour=0x2F81F7,
+        )
+    )
+    await interaction.response.send_message(view=view)
 
 
 @bot.tree.command(name="player", description="プレイヤー数の推移グラフ")

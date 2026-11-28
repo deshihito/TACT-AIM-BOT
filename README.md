@@ -110,3 +110,23 @@ crontab への登録、luna が `tact-aim-bot` の再起動だけをパスワー
 - オンライン判定の窓 (現在 45 秒仮置き) — 実プレイで調整
 - Chat1〜5 / Member1 のデコード (現在は生サマリのみ)
 - 名前チャンクの連結 (回転チャンクを名前全体へ組み立てる処理)
+
+## リアルタイム観戦アクティビティ
+
+Bot プロセスが HTTP サーバー (環境変数 `ACTIVITY_PORT`、既定 8765) を立て、
+`web/` の観戦ページと WebSocket 配信 (`/ws`、0.5秒間隔のスナップショット) を
+提供する。Discord 側の手順:
+
+1. Developer Portal → 対象アプリ → **Activities** を有効化
+2. **URL Mappings** で `/` → 公開URL (下記) を設定
+3. サーバーで `/watch` を実行するとアクティビティ招待リンクが投稿される
+
+公開URLは Pi のサーバーへ HTTPS で届く必要がある。手軽なのは cloudflared:
+
+```
+cloudflared tunnel --url http://localhost:8765
+```
+
+表示される `https://*.trycloudflare.com` を URL Mappings に設定する
+(クイックトンネルは再起動で URL が変わる。固定したい場合は名前付きトンネル +
+独自ドメインを使う)。
