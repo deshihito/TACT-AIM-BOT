@@ -192,11 +192,47 @@ async def _start_activity_server() -> None:
             await asyncio.sleep(15)
 
 
+async def _bulk_sync() -> None:
+    # tree.sync() の一括上書きを、Entry Point コマンドを保持したまま行う。
+    #
+    # アクティビティ有効化時に Discord が自動作成した Entry Point コマンド
+    # (launch, type=7) は、一括上書きの payload に含めないと更新全体が
+    # 拒否される (400 / error 50240、2026-11-28 に /ban が未登録になった
+    # 原因)。discord.py 2.7 の tree は Entry Point を表現できないため、
+    # 登録済みのものを API から取得してそのまま payload へ含める。
+    tree = bot.tree
+    app_id = bot.application_id
+    existing = await bot.http.get_global_commands(app_id)
+    payload = [
+        command.to_dict(tree) for command in tree._get_all_commands(guild=None)
+    ]
+    for ep in existing:
+        if ep.get("type") != 7:
+            continue
+        payload.append(
+            {
+                k: ep[k]
+                for k in (
+                    "name",
+                    "description",
+                    "type",
+                    "handler",
+                    "integration_types",
+                    "contexts",
+                    "default_member_permissions",
+                    "nsfw",
+                )
+                if k in ep
+            }
+        )
+    await bot.http.bulk_upsert_global_commands(app_id, payload=payload)
+
+
 async def _sync_tree() -> None:
     # グローバルコマンドの sync はレート制限 (429 の retry_after) で長時間
     # 戻らないことがあるため、背景でタイムアウト付きで実行する。
     try:
-        await asyncio.wait_for(bot.tree.sync(), timeout=120)
+        await asyncio.wait_for(_bulk_sync(), timeout=120)
         print("tree synced", flush=True)
     except Exception as e:
         print(f"tree sync failed/timed out: {e}", flush=True)

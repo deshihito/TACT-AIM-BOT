@@ -130,8 +130,19 @@ def _base_path() -> str:
     return "/" + base.strip("/")
 
 
+@web.middleware
+async def _no_cache(request: web.Request, handler):
+    # Discord アクティビティの WebView は静的ファイルを強くキャッシュし、
+    # デプロイ後も古い app.js を出し続けることがある (2026-11-28 の実害)。
+    # 全応答に no-cache を付け、ETag/Last-Modified で再検証させる
+    # (変更がなければ 304 で済むので転送量は増えない)。
+    response = await handler(request)
+    response.headers["Cache-Control"] = "no-cache"
+    return response
+
+
 async def start_server(cloud: TactAimCloud, client_id: str = "") -> web.AppRunner:
-    app = web.Application()
+    app = web.Application(middlewares=[_no_cache])
     app["cloud"] = cloud
     app["client_id"] = client_id
     base = _base_path()
