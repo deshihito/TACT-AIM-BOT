@@ -15,6 +15,8 @@ TurboWarp クラウド (TACT-AIM 16.9) をスクレイピングし、Discord で
   /unban          - /ban の解除 (管理者専用)
   /map            - プレイヤー配置マップ (PNG、Components V2)
   /tracker        - プレイヤー戦績トラッカー (ページ切替、Components V2)
+  /link           - Discord と TACT-AIM を連携 (全員)。ワンタイムURLから
+                    参加すると紐付き、初期コイン +2 (Bot 側台帳)
 
 トークンは環境変数 DISCORD_TOKEN (.env) から読む。
 フェス登録は state.json に保存され、再起動しても維持される。
@@ -37,6 +39,7 @@ from cloud import CLOUD_VARS, EXTRA_VARS, PROJECT_ID, TactAimCloud
 from festival import is_festival
 from graph_render import render_trend_png
 from history import History, data_dir
+from links import LinkStore
 from voter import VoterManager
 from map_data import tiles_for
 from map_render import render_map_png
@@ -55,6 +58,7 @@ history = History(_history_path)
 
 cloud = TactAimCloud()
 voter = VoterManager(cloud)
+links = LinkStore(data_dir() / "links.json")
 
 # 管理者 (Discord ユーザーID)。特定コマンド (raw 等) はこのIDだけが実行できる。
 ADMIN_IDS = {
@@ -247,6 +251,8 @@ async def on_ready():
         sample_history.start()
     if not auto_switch.is_running():
         auto_switch.start()
+    if not check_links.is_running():
+        check_links.start()
 
 
 @tasks.loop(seconds=30)
@@ -377,6 +383,62 @@ async def festival_clear(interaction: discord.Interaction):
     await interaction.response.send_message(
         f"フェス登録を解除しました。通常の TACT-AIM ({PROJECT_ID}) に戻ります。"
     )
+
+
+# --- /link (Discord とプレイヤーの連携、links.py) ---
+
+@bot.tree.command(
+    name="link",
+    description="TACT-AIM と連携する: 専用リンクから参加すると紐付き、初期コイン+2",
+)
+async def link(interaction: discord.Interaction):
+    code = links.issue(interaction.user.id, interaction.channel_id or 0)
+    url = f"https://turbowarp.org/{cloud.project_id}?username=player{code}"
+    view = discord.ui.View()
+    view.add_item(
+        discord.ui.Button(label="TACT-AIM を開く", style=discord.ButtonStyle.link, url=url)
+    )
+    current = links.link_for_user(interaction.user.id)
+    note = (
+        f"\n現在の連携: `{current['name']}`（残高 {links.balance(interaction.user.id)} コイン）"
+        if current
+        else ""
+    )
+    await interaction.response.send_message(
+        "下のリンクから TACT-AIM に参加すると連携が完了します"
+        "（プレイヤー名が専用のものになります）。リンクは10分間有効です。"
+        f"{note}\n{url}",
+        view=view,
+        ephemeral=True,
+    )
+
+
+@tasks.loop(seconds=5)
+async def check_links():
+    """発行コードの名前で参加したプレイヤーを検出して連携を確定する。"""
+    for r in cloud.online_players():
+        done = links.try_complete(cloud.full_name(r.player_id))
+        if not done:
+            continue
+        if done["bonus"]:
+            text = (
+                f"<@{done['discord_id']}> 連携が完了しました: プレイヤー名 `{done['name']}`"
+                f"\n初期コイン +{done['bonus']}（残高 {done['balance']} コイン）"
+            )
+        else:
+            text = (
+                f"<@{done['discord_id']}> 連携を更新しました: プレイヤー名 `{done['name']}`"
+                f"（残高 {done['balance']} コイン）"
+            )
+        channel = bot.get_channel(done["channel_id"])
+        try:
+            if channel is not None:
+                await channel.send(text)
+            else:
+                user = await bot.fetch_user(done["discord_id"])
+                await user.send(text)
+        except Exception:
+            pass
 
 
 # --- /ban と /unban (管理者専用、voter.py の検知フラグ方式) ---
