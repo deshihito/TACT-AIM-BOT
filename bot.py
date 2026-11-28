@@ -206,25 +206,16 @@ async def _bulk_sync() -> None:
     payload = [
         command.to_dict(tree) for command in tree._get_all_commands(guild=None)
     ]
-    for ep in existing:
-        if ep.get("type") != 7:
-            continue
-        payload.append(
-            {
-                k: ep[k]
-                for k in (
-                    "name",
-                    "description",
-                    "type",
-                    "handler",
-                    "integration_types",
-                    "contexts",
-                    "default_member_permissions",
-                    "nsfw",
-                )
-                if k in ep
-            }
-        )
+    # Entry Point は取得したオブジェクトをそのまま (id 含む) 含める。
+    # id を落とすと別コマンド扱いになり、既存の Entry Point が payload に
+    # 無い = 削除とみなされて再び 50240 になる (c851cf8 の失敗)。
+    entry_points = [c for c in existing if c.get("type") == 7]
+    payload.extend(entry_points)
+    print(
+        f"sync payload: {len(payload)} commands "
+        f"(entry points: {len(entry_points)})",
+        flush=True,
+    )
     await bot.http.bulk_upsert_global_commands(app_id, payload=payload)
 
 
