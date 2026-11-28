@@ -31,6 +31,8 @@ import re
 import time
 from pathlib import Path
 
+from urllib.parse import quote
+
 import discord
 from discord import app_commands
 from discord.ext import commands, tasks
@@ -391,9 +393,39 @@ async def festival_clear(interaction: discord.Interaction):
     name="link",
     description="TACT-AIM と連携する: 専用リンクから参加すると紐付き、初期コイン+2",
 )
-async def link(interaction: discord.Interaction):
-    code = links.issue(interaction.user.id, interaction.channel_id or 0)
-    url = f"https://turbowarp.org/{cloud.project_id}?username=player{code}"
+@app_commands.describe(
+    username="任意: 自分の Scratch ユーザーネーム (指定するとその名前で連携)"
+)
+async def link(interaction: discord.Interaction, username: str | None = None):
+    if username is not None:
+        username = username.strip()
+        if not re.fullmatch(r"[A-Za-z0-9_-]{3,20}", username):
+            await interaction.response.send_message(
+                "ユーザーネームは3〜20文字の英数字・ハイフン・アンダースコアで入力してください。",
+                ephemeral=True,
+            )
+            return
+        error = links.issue_name(
+            interaction.user.id, interaction.channel_id or 0, username
+        )
+        if error:
+            await interaction.response.send_message(error, ephemeral=True)
+            return
+        url = (
+            f"https://turbowarp.org/{cloud.project_id}"
+            f"?username={quote(username, safe='')}"
+        )
+        intro = (
+            f"下のリンクから `{username}` として TACT-AIM に参加すると連携が完了します。"
+            "既にその名前でプレイ中の場合は、そのまま連携されます。予約は10分間有効です。"
+        )
+    else:
+        code = links.issue(interaction.user.id, interaction.channel_id or 0)
+        url = f"https://turbowarp.org/{cloud.project_id}?username=player{code}"
+        intro = (
+            "下のリンクから TACT-AIM に参加すると連携が完了します"
+            "（プレイヤー名が専用のものになります）。リンクは10分間有効です。"
+        )
     view = discord.ui.View()
     view.add_item(
         discord.ui.Button(label="TACT-AIM を開く", style=discord.ButtonStyle.link, url=url)
@@ -405,9 +437,7 @@ async def link(interaction: discord.Interaction):
         else ""
     )
     await interaction.response.send_message(
-        "下のリンクから TACT-AIM に参加すると連携が完了します"
-        "（プレイヤー名が専用のものになります）。リンクは10分間有効です。"
-        f"{note}\n{url}",
+        f"{intro}{note}\n{url}",
         view=view,
         ephemeral=True,
     )

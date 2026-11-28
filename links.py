@@ -5,6 +5,8 @@ TACT-AIM のプレイヤー名は接続ユーザーネームそのもの (原作
 ?username= でそれを指定できる。そこで /link でワンタイムコードを発行し、
 turbowarp.org/<project>?username=player<コード> から参加したプレイヤーを
 クラウド側で検出して、発行した Discord ユーザーと紐付ける。
+/link に username オプションを付けた場合は、その Scratch ユーザーネーム
+での参加を検出して紐付ける (名前は先着で、他人の連携済みは取れない)。
 
 連携の特典として、Bot 側のコイン台帳に初期コイン +2 を付与する
 (同一ユーザーの再連携では付与しない)。コインは Bot 側だけの台帳で、
@@ -31,6 +33,8 @@ class LinkStore:
         self.path = path
         # code -> {"discord_id": int, "channel_id": int, "expires": float}
         self.pending: dict[str, dict] = {}
+        # 名前 (小文字化) -> {"discord_id": int, "channel_id": int, "expires": float}
+        self.pending_names: dict[str, dict] = {}
         # discord_id(str) -> {"name": str, "code": str, "linked_at": float, "bonus": bool}
         self.links: dict[str, dict] = {}
         # discord_id(str) -> 残高
@@ -55,14 +59,23 @@ class LinkStore:
 
     # --- コード発行 ---
 
-    def issue(self, discord_id: int, channel_id: int, now: float | None = None) -> str:
-        """ワンタイムコードを発行する。同じユーザーの古いコードは破棄する。"""
-        now = time.time() if now is None else now
+    def _clear_pending_of(self, discord_id: int, now: float) -> None:
+        """期限切れの予約と、そのユーザーの既存の予約 (コード/名前) を消す。"""
         self.pending = {
             c: p
             for c, p in self.pending.items()
             if p["expires"] > now and p["discord_id"] != discord_id
         }
+        self.pending_names = {
+            n: p
+            for n, p in self.pending_names.items()
+            if p["expires"] > now and p["discord_id"] != discord_id
+        }
+
+    def issue(self, discord_id: int, channel_id: int, now: float | None = None) -> str:
+        """ワンタイムコードを発行する。同じユーザーの古い予約は破棄する。"""
+        now = time.time() if now is None else now
+        self._clear_pending_of(discord_id, now)
         used = set(self.pending) | {v.get("code") for v in self.links.values()}
         while True:
             code = str(secrets.randbelow(9_000_000) + 1_000_000)
@@ -75,6 +88,30 @@ class LinkStore:
         }
         return code
 
+    def issue_name(
+        self, discord_id: int, channel_id: int, name: str, now: float | None = None
+    ) -> str | None:
+        """自分の Scratch ユーザーネームでの連携を予約する。
+
+        成功したら None、失敗したら理由を返す。名前は大文字小文字を
+        区別せずに照合する。他人の連携済み・予約中の名前は取れない。
+        """
+        now = time.time() if now is None else now
+        key = name.lower()
+        for did, v in self.links.items():
+            if v.get("name", "").lower() == key and int(did) != discord_id:
+                return "その名前は既に別のユーザーに連携されています"
+        p = self.pending_names.get(key)
+        if p and p["expires"] > now and p["discord_id"] != discord_id:
+            return "その名前は現在ほかのユーザーが予約中です"
+        self._clear_pending_of(discord_id, now)
+        self.pending_names[key] = {
+            "discord_id": discord_id,
+            "channel_id": channel_id,
+            "expires": now + CODE_TTL_SEC,
+        }
+        return None
+
     @staticmethod
     def code_of(player_name: str | None) -> str | None:
         """プレイヤー名が player<7桁コード> の形ならコードを返す。"""
@@ -86,22 +123,31 @@ class LinkStore:
     # --- 連携の確定 ---
 
     def try_complete(self, player_name: str, now: float | None = None) -> dict | None:
-        """オンラインプレイヤー名が pending コードと一致したら連携を確定する。
+        """オンラインプレイヤー名が予約 (コード/名前) と一致したら確定する。
 
         確定したら {"discord_id", "channel_id", "name", "bonus", "balance"}
         を返す (bonus は今回付与した初期コイン。0 は付与済みの再連携)。
         """
         now = time.time() if now is None else now
+        if not player_name:
+            return None
         code = self.code_of(player_name)
-        if code is None:
-            return None
-        p = self.pending.get(code)
-        if p is None:
-            return None
-        if p["expires"] <= now:
-            del self.pending[code]
-            return None
-        del self.pending[code]
+        if code is not None:
+            p = self.pending.get(code)
+            if p is not None:
+                del self.pending[code]
+                if p["expires"] <= now:
+                    return None
+                return self._complete(p, player_name, code, now)
+        p = self.pending_names.get(player_name.lower())
+        if p is not None:
+            del self.pending_names[player_name.lower()]
+            if p["expires"] <= now:
+                return None
+            return self._complete(p, player_name, "", now)
+        return None
+
+    def _complete(self, p: dict, player_name: str, code: str, now: float) -> dict:
         did = str(p["discord_id"])
         already = bool(self.links.get(did, {}).get("bonus"))
         bonus = 0

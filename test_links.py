@@ -67,6 +67,44 @@ def test_non_matching_names_ignored(tmp_path):
     assert s.link_for_user(111) is None
 
 
+def test_name_claim_flow(tmp_path):
+    s = _store(tmp_path)
+    assert s.issue_name(111, 999, "Tako_Tomoketa", now=1000.0) is None
+    # 大文字小文字が違っても照合する
+    done = s.try_complete("tako_tomoketa", now=1001.0)
+    assert done is not None
+    assert done["discord_id"] == 111
+    assert done["bonus"] == LINK_BONUS
+    assert s.user_for_name("tako_tomoketa") == 111
+
+
+def test_name_claim_conflicts(tmp_path):
+    s = _store(tmp_path)
+    assert s.issue_name(111, 999, "shared-name", now=1000.0) is None
+    # 予約中は他人が取れない
+    assert s.issue_name(222, 999, "Shared-Name", now=1001.0) is not None
+    s.try_complete("shared-name", now=1002.0)
+    # 連携済みも他人は取れない
+    assert s.issue_name(222, 999, "shared-name", now=2000.0) is not None
+    # 本人の再予約はよい
+    assert s.issue_name(111, 999, "shared-name", now=2000.0) is None
+
+
+def test_name_claim_expires(tmp_path):
+    s = _store(tmp_path)
+    assert s.issue_name(111, 999, "late-name", now=1000.0) is None
+    assert s.try_complete("late-name", now=1000.0 + 601) is None
+    # 期限切れ後は他人が予約できる
+    assert s.issue_name(222, 999, "late-name", now=2000.0) is None
+
+
+def test_code_issue_clears_name_claim(tmp_path):
+    s = _store(tmp_path)
+    assert s.issue_name(111, 999, "my-name", now=1000.0) is None
+    s.issue(111, 999, now=1001.0)
+    assert s.try_complete("my-name", now=1002.0) is None
+
+
 def test_persistence_roundtrip(tmp_path):
     path = tmp_path / "links.json"
     s = LinkStore(path)
