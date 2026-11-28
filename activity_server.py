@@ -16,6 +16,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import time
 from pathlib import Path
 
 from aiohttp import web
@@ -72,12 +73,26 @@ def snapshot(cloud: TactAimCloud) -> dict:
                 "deb": _raw_int(raw, 229, 230),  # f53: デバフアイコン数
             }
         )
+    # キル表示用: 直近8秒のキルイベント (名前は解決できなければ None のまま)
+    now = time.monotonic()
+    kills = [
+        {
+            "seq": e["seq"],
+            "k": e["k"],
+            "v": e["v"],
+            "kn": cloud.full_name(e["k"]),
+            "vn": cloud.full_name(e["v"]),
+        }
+        for e in cloud.recent_kills
+        if now - e["at"] <= 8
+    ]
     return {
         "type": "state",
         "project": cloud.project_id,
         "map": current_map_number(cloud.project_id),
         "festival": cloud.is_festival,
         "players": players,
+        "kills": kills,
     }
 
 

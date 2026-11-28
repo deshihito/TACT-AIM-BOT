@@ -13,6 +13,7 @@ from __future__ import annotations
 import asyncio
 import json
 import time
+from collections import deque
 
 import websockets
 
@@ -49,6 +50,10 @@ class TactAimCloud:
         self.seen_lengths: set[int] = set()
         # セッション統計 (キル/デス/ダメージ)
         self.stats = StatsTracker()
+        # 直近のキルイベント (観戦のキル表示用)。seq はプロジェクトを
+        # またいでも単調増加させる (クライアント側の既読管理のため)。
+        self.recent_kills: deque = deque(maxlen=100)
+        self._kill_seq = 0
         # 名前チャンクの蓄積: {player_id: {位置: 2文字}}。集まると正式名になる
         self._name_chunks: dict[str, dict[int, str]] = {}
         # 通報票の集計: {対象ID: {投票者ID: 最終観測時刻 (monotonic)}}。
@@ -96,6 +101,7 @@ class TactAimCloud:
         self.parse_failures = 0
         self.seen_lengths.clear()
         self.stats.reset()
+        self.recent_kills.clear()
         self._name_chunks.clear()
         self._reports.clear()
         ws, self._ws = self._ws, None
@@ -134,6 +140,18 @@ class TactAimCloud:
         old = self.players.get(rec.player_id)
         if old is None or seq_is_newer(rec.seq, old.seq):
             self.stats.observe(old, rec)
+            # キル表示用に、observe で積まれたキルを連番付きで取り出す
+            for attacker_id, victim_id in self.stats.kill_log:
+                self._kill_seq += 1
+                self.recent_kills.append(
+                    {
+                        "seq": self._kill_seq,
+                        "k": attacker_id,
+                        "v": victim_id,
+                        "at": time.monotonic(),
+                    }
+                )
+            self.stats.kill_log.clear()
             self._note_name(rec)
             self._note_report(rec)
             self.players[rec.player_id] = rec

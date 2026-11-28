@@ -30,6 +30,9 @@ class PlayerStats:
 class StatsTracker:
     def __init__(self):
         self.by_player: dict[str, PlayerStats] = {}
+        # キル発生のログ ((攻撃者ID, 被害者ID))。呼び出し側 (cloud) が
+        # observe のたびに取り出してクリアする (キル表示用)。
+        self.kill_log: list[tuple[str, str]] = []
 
     def reset(self) -> None:
         self.by_player.clear()
@@ -49,9 +52,9 @@ class StatsTracker:
             if old_hits.get(key, 0) > 0:
                 old_hits[key] -= 1
                 continue
-            self._count_hit(victim, h)
+            self._count_hit(victim, h, new.player_id)
 
-    def _count_hit(self, victim: PlayerStats, h: HitEvent) -> None:
+    def _count_hit(self, victim: PlayerStats, h: HitEvent, victim_id: str) -> None:
         attacker = self.get(h.attacker_id)
         attacker.damage_dealt += h.damage
         attacker.hits_landed += 1
@@ -60,3 +63,4 @@ class StatsTracker:
         if h.is_kill:
             attacker.kills += 1
             victim.deaths += 1
+            self.kill_log.append((h.attacker_id, victim_id))

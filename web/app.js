@@ -29,6 +29,12 @@ const TILE_COLORS = {
 };
 const STATION_TYPES = new Set([4, 5, 8, 9, 10, 11, 12, 13, 14, 16, 17, 26]);
 const TEAM_HUES = { 1: 0, 2: 25, 3: 58, 4: 108, 5: 180, 6: 234, 7: 270, 8: 306 };
+// チーム色 (f28) の表示色。プレイヤー描画の TEAM_HUES と同じ色相・明度。
+const TEAM_COLORS = Object.fromEntries(
+  Object.entries(TEAM_HUES).map(([tc, hue]) => [tc, `hsl(${hue} 75% 60%)`]));
+// 原作でアニメーション・状態変化するタイル種別。焼き込みには含めず、
+// 全体表示・フォロー表示とも毎フレーム drawTile でライブ描画する。
+const LIVE_TYPES = new Set([2, 7, 15, 20, 21, 22, 23, 24, 28]);
 // 弾が当たるタイル種別 (原作 Bullet wall の構築規則)
 const BULLET_WALL_TYPES = new Set([1, 2, 6, 20, 21, 22, 24, 25, 28]);
 const GIMMICK_TYPES = new Set([20, 21, 22, 24, 28]);
@@ -43,6 +49,7 @@ const menuBtn = document.getElementById("menubtn");
 const followbar = document.getElementById("followbar");
 const followName = document.getElementById("followname");
 const followExit = document.getElementById("followexit");
+const killfeedEl = document.getElementById("killfeed");
 
 const TILE_PX = 50 * UNIT;  // 1マス (50ユニット) の仮想 px
 
@@ -173,15 +180,95 @@ function drawStampCostume(name, x, y, dir, scaleMul, alpha) {
 
 // ---------- 地形 ----------
 
+// ライブ描画するタイルの状態 (キー: タイルオブジェクト自体)。
+// ドア: {ang: 現在の開き角, frac: 開き割合 0..1, last: 前回描画時刻}。
+// スキルスポット: {cooldownUntil: クールダウン終了時刻}。
+// どちらも buildTerrain のたびにクリアする。
+const doorState = new Map();
+const spotState = new Map();
+
+// タイル中心 (cx, cy) へ素材 key を重ねる (ライブ描画の前描き・上描き用)。
+// 画像が無いプロジェクト (blood 等) ではその層を描かない。
+function stampTileImage(g, images, manifest, key, cx, cy, rotRad, alpha) {
+  const img = images.get(key);
+  if (!img || !manifest || !manifest[key]) return;
+  const [wu, hu] = manifest[key];
+  const w = TILE_PX * wu / 50, h = TILE_PX * hu / 50;
+  g.save();
+  g.translate(cx, cy);
+  if (rotRad) g.rotate(rotRad);
+  g.globalAlpha = alpha;
+  g.drawImage(img, -w / 2, -h / 2, w, h);
+  g.restore();
+}
+
 // タイル1枚をコンテキスト g (仮想 px 座標系) へ描く。
-// buildTerrain のオフスクリーン焼き込みと、フォロー時のライブ描画で共用。
-function drawTile(g, images, manifest, tile) {
+// buildTerrain のオフスクリーン焼き込みと、ライブ描画で共用。
+// nowMs を渡すと LIVE_TYPES のタイルは原作のアニメーション・状態変化を
+// 再現する (null = 静的描画、従来動作)。
+function drawTile(g, images, manifest, tile, nowMs = null) {
   const [gx, gy, typ, f5 = 0, f6 = 0] = tile;
   const [cx, cy] = toPx(gx * 50, gy * 50);
+  const live = nowMs != null && LIVE_TYPES.has(typ);
+  if (live && typ === 2) {
+    // ドア: 中心から 130 以内にプレイヤーがいれば開く (原作は扉が
+    // 810°/秒で回転し、開いている間は薄くなる)。
+    let st = doorState.get(tile);
+    if (!st) {
+      st = { ang: f5, frac: 0, last: nowMs };
+      doorState.set(tile, st);
+    }
+    const dt = Math.min(0.1, Math.max(0, (nowMs - st.last) / 1000));
+    st.last = nowMs;
+    const open = simPlayers.some(
+      (p) => Math.hypot(p.x - gx * 50, p.y - gy * 50) < 130);
+    const targetAng = open ? 270 : f5;
+    const targetFrac = open ? 1 : 0;
+    const dAng = targetAng - st.ang;
+    st.ang += Math.sign(dAng) * Math.min(Math.abs(dAng), 810 * dt);
+    const dFrac = targetFrac - st.frac;
+    st.frac += Math.sign(dFrac) * Math.min(Math.abs(dFrac), 3 * dt);
+    g.save();
+    g.globalAlpha = 1 - st.frac * 0.6;
+    drawTile(g, images, manifest, [gx, gy, 2, st.ang, f6, tile[5]], null);
+    g.restore();
+    return;
+  }
+  // 原作の二重スタンプ: レーザー (軸平行のとき) とジェムは壁を下に敷く
+  if (live && typ === 22 && f5 % 90 === 0) {
+    stampTileImage(g, images, manifest, "wall", cx, cy, 0, 1);
+  }
+  if (live && typ === 28) {
+    stampTileImage(g, images, manifest, "wall", cx, cy, 0, 1);
+  }
   let key2 = null;
   const template = TYPE_COSTUME[typ];
-  if (typ === 15) key2 = f5 > 0 ? "skill_spot0" : "skill_spot1";
-  else if (template) key2 = template.replace("{s}", f6 < 0 ? "1" : "0");
+  if (typ === 15) {
+    if (live) {
+      // スキルスポット: ready 中にプレイヤーが重なると 10 秒クールダウン
+      let st = spotState.get(tile);
+      if (!st) {
+        st = { cooldownUntil: 0 };
+        spotState.set(tile, st);
+      }
+      if (nowMs >= st.cooldownUntil
+        && simPlayers.some((p) => Math.abs(p.x - gx * 50) < 25
+          && Math.abs(p.y - gy * 50) < 25)) {
+        st.cooldownUntil = nowMs + 10000;
+      }
+      key2 = nowMs < st.cooldownUntil ? "skill_spot0" : "skill_spot1";
+    } else {
+      key2 = f5 > 0 ? "skill_spot0" : "skill_spot1";
+    }
+  } else if (template) {
+    let sfx = f6 < 0 ? "1" : "0";
+    // ギミックは発動中 (クールダウン中) は作動側の見た目になる
+    if (live && GIMMICK_TYPES.has(typ)) {
+      const gi = gimmicks.indexOf(tile);
+      if (gi >= 0 && (gimmickReady.get(gi) || 0) > nowMs) sfx = "1";
+    }
+    key2 = template.replace("{s}", sfx);
+  }
   const img = key2 && images.get(key2);
   if (img && manifest && manifest[key2]) {
     const [wu, hu] = manifest[key2];
@@ -199,6 +286,16 @@ function drawTile(g, images, manifest, tile) {
     const s = TILE_PX / 2 + 0.5;
     g.fillStyle = TILE_COLORS[typ] || "#64748b";
     g.fillRect(cx - s, cy - s, s * 2, s * 2);
+  }
+  if (live && typ === 7) {
+    // ワープ: warp2 が GHOST 相当の透明度でゆらぐ (f5 は 150°/秒で進む)
+    const alpha = 1 - (Math.sin((f5 + nowMs / 1000 * 150) * DEG) * 20 + 20) / 100;
+    stampTileImage(g, images, manifest, "warp2", cx, cy, 0, alpha);
+  }
+  if (live && typ === 23) {
+    // ワープ床: 光の輪が明滅しながら回る
+    const alpha = 0.45 + 0.3 * Math.sin(nowMs / 350);
+    stampTileImage(g, images, manifest, "warp_light", cx, cy, -(90 - f5) * DEG, alpha);
   }
 }
 
@@ -244,6 +341,8 @@ async function buildTerrain(project, mapNum) {
   wallSet = new Set();
   gimmicks = [];
   curTiles = [];
+  doorState.clear();
+  spotState.clear();
   if (!entry) return;
   const tiles = [...entry.base, ...(entry.maps[mapNum || "1"] || [])];
   curTiles = tiles;
@@ -252,7 +351,10 @@ async function buildTerrain(project, mapNum) {
   }
   gimmicks = tiles.filter((t) => GIMMICK_TYPES.has(t[2]));
   const { manifest, images } = await loadAssets(project);
-  for (const tile of tiles) drawTile(g, images, manifest, tile);
+  // LIVE_TYPES は焼き込まず、表示時にライブ描画で上に乗せる
+  for (const tile of tiles) {
+    if (!LIVE_TYPES.has(tile[2])) drawTile(g, images, manifest, tile);
+  }
   g.strokeStyle = "#475569";
   g.lineWidth = 2;
   g.strokeRect(0, 0, VW - 1, VH - 1);
@@ -268,10 +370,11 @@ function drawTerrainLive() {
   const wy1 = MAP_WORLD[1] + (VH - vy0) / UNIT + 50;
   const entry = curProject ? assets.get(curProject) : null;
   drawFloor(ctx, wx0, wy0, wx1, wy1, 2 * UNIT);
+  const now = performance.now();
   for (const tile of curTiles) {
     const tx = tile[0] * 50, ty = tile[1] * 50;
     if (tx < wx0 - 50 || tx > wx1 + 50 || ty < wy0 - 50 || ty > wy1 + 50) continue;
-    drawTile(ctx, entry?.images || new Map(), entry?.manifest || null, tile);
+    drawTile(ctx, entry?.images || new Map(), entry?.manifest || null, tile, now);
   }
   ctx.strokeStyle = "#475569";
   ctx.lineWidth = 2;
@@ -1193,7 +1296,16 @@ function frame(now) {
   ctx.fillStyle = "#0d1117";
   ctx.fillRect(-VW, -VH, VW * 3, VH * 3);
   if (followPos) drawTerrainLive();
-  else if (terrain) ctx.drawImage(terrain.canvas, 0, 0);
+  else if (terrain) {
+    ctx.drawImage(terrain.canvas, 0, 0);
+    // 焼き込みから外したライブタイル (ギミック等) を上に描く
+    const entry = curProject ? assets.get(curProject) : null;
+    for (const tile of curTiles) {
+      if (LIVE_TYPES.has(tile[2])) {
+        drawTile(ctx, entry?.images || new Map(), entry?.manifest || null, tile, now);
+      }
+    }
+  }
   // 弾シミュレーションは原作の 30fps 固定ステップ
   if (lastFrameAt) simAcc += Math.min(250, now - lastFrameAt);
   lastFrameAt = now;
@@ -1206,6 +1318,52 @@ function frame(now) {
   requestAnimationFrame(frame);
 }
 requestAnimationFrame(frame);
+
+// ---------- キル表示 (キルフィード) ----------
+
+let lastKillSeq = null; // 既読の最大 seq (null = まだ何も見ていない)
+
+function killNameColor(id) {
+  const p = curSnap?.players.find((pl) => pl.id === id);
+  return (p && TEAM_COLORS[p.tc]) || "#e2e8f0";
+}
+
+function showKill(ev) {
+  const row = document.createElement("div");
+  row.className = "killrow";
+  const k = document.createElement("span");
+  k.style.fontWeight = "bold";
+  k.style.color = killNameColor(ev.k);
+  k.textContent = ev.kn || `ID ${ev.k}`;
+  const sep = document.createElement("span");
+  sep.textContent = " ▸ ";
+  const v = document.createElement("span");
+  v.style.fontWeight = "bold";
+  v.style.color = killNameColor(ev.v);
+  v.textContent = ev.vn || `ID ${ev.v}`;
+  row.appendChild(k);
+  row.appendChild(sep);
+  row.appendChild(v);
+  killfeedEl.appendChild(row);
+  while (killfeedEl.children.length > 3) killfeedEl.children[0].remove();
+  setTimeout(() => { row.style.opacity = "0"; }, 4500);
+  setTimeout(() => { row.remove(); }, 5000);
+}
+
+function handleKills(kills) {
+  if (!Array.isArray(kills) || kills.length === 0) return;
+  const maxSeq = Math.max(...kills.map((e) => e.seq));
+  // 初回は既読化するだけ (接続前からの残りを表示しない)
+  if (lastKillSeq === null) {
+    lastKillSeq = maxSeq;
+    return;
+  }
+  const fresh = kills
+    .filter((e) => e.seq > lastKillSeq)
+    .sort((a, b) => a.seq - b.seq);
+  for (const ev of fresh) showKill(ev);
+  lastKillSeq = Math.max(lastKillSeq, maxSeq);
+}
 
 async function handleSnap(snap) {
   if (snap.type !== "state") return;
@@ -1222,6 +1380,7 @@ async function handleSnap(snap) {
   prevSnap = curSnap; prevAt = curAt;
   curSnap = snap; curAt = performance.now();
   simPlayers = snap.players;
+  handleKills(snap.kills);
   // フォロー対象が退出したら全体表示に戻し、一覧と追随表示を同期する。
   // setFollow は使わず冪等に直接書き換える (毎回の再構築で表示が
   // ちらつき、ボタン操作と競合するため)。

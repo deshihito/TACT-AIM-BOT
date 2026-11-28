@@ -51,6 +51,16 @@
     background: #2563eb; color: #ffffff; border: none; border-radius: 999px;
     padding: 5px 12px; font: inherit; cursor: pointer;
   }
+  #killfeed {
+    position: fixed; top: 64px; left: 50%; transform: translateX(-50%);
+    z-index: 10; display: flex; flex-direction: column; gap: 6px;
+    align-items: center; pointer-events: none;
+  }
+  #killfeed .killrow {
+    background: rgba(13, 17, 23, .55); color: #e2e8f0;
+    border-radius: 999px; padding: 6px 14px;
+    font: 14px/1.5 system-ui, sans-serif; transition: opacity .5s;
+  }
 </style>
 </head>
 <body>
@@ -62,6 +72,7 @@
 <button id="menubtn" type="button" aria-label="プレイヤー一覧"><span></span><span></span><span></span></button>
 <div id="players"></div>
 <div id="followbar"><span id="followname"></span><button id="followexit" type="button">全体表示</button></div>
+<div id="killfeed"></div>
 <script type="module" src="app.js"></script>
 </body>
 </html>

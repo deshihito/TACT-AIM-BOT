@@ -42,6 +42,28 @@ def test_hit_diff_counting():
     print("stats: OK")
 
 
+def test_kill_log():
+    st = StatsTracker()
+    v1 = rec("1000", [])
+    st.observe(None, v1)  # 初回は基準化のみ
+    assert st.kill_log == []
+
+    hit = HitEvent(attacker_id="2000", damage=30, kind="01")
+    v2 = rec("1000", [hit])
+    st.observe(v1, v2)
+    assert st.kill_log == [], "非キルでは記録しない"
+
+    kill = HitEvent(attacker_id="2000", damage=120, kind="00")
+    v3 = rec("1000", [hit, kill])
+    st.observe(v2, v3)
+    assert st.kill_log == [("2000", "1000")]
+
+    # 同じレコードの再観測では二重記録しない
+    st.observe(v3, v3)
+    assert st.kill_log == [("2000", "1000")]
+    print("kill_log: OK")
+
+
 def test_map_render():
     from map_render import render_map_png
 
@@ -55,5 +77,6 @@ def test_map_render():
 
 if __name__ == "__main__":
     test_hit_diff_counting()
+    test_kill_log()
     test_map_render()
     print("all tests passed")
