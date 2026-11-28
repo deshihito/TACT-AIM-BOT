@@ -11,7 +11,7 @@ TurboWarp クラウド (TACT-AIM 16.9) をスクレイピングし、Discord で
                     フェス時間に自動で切り替わる (原作のフェス判定に従う)。
                     フェスは同時に1つだけ。入れるたびに前の登録と入れ替わる。
   /festival_clear - フェス登録を解除し、通常の TACT-AIM へ戻す (管理者専用)
-  /ban            - 通報票が溜まった相手に Bot の票を加えて排除 (管理者専用)
+  /ban            - Bot の票を入れて排除 (管理者専用)
   /unban          - /ban の解除 (管理者専用)
   /map            - プレイヤー配置マップ (PNG、Components V2)
   /tracker        - プレイヤー戦績トラッカー (ページ切替、Components V2)
@@ -37,7 +37,7 @@ from cloud import CLOUD_VARS, EXTRA_VARS, PROJECT_ID, TactAimCloud
 from festival import is_festival
 from graph_render import render_trend_png
 from history import History, data_dir
-from voter import VoterManager, votes_needed
+from voter import VoterManager
 from map_data import tiles_for
 from map_render import render_map_png
 from record import TEAM_COLOR_NAMES
@@ -389,7 +389,7 @@ def _candidate_lines(candidates) -> str:
 
 @bot.tree.command(
     name="ban",
-    description="通報票が成立直前の相手に Bot の票を加えて排除する (管理者専用)",
+    description="指定プレイヤーをBANする (管理者専用)",
 )
 @app_commands.describe(name="表示プレイヤー名 (正式なユーザー名)")
 async def ban(interaction: discord.Interaction, name: str):
@@ -418,31 +418,11 @@ async def ban(interaction: discord.Interaction, name: str):
             f"{display} (ID {rec.player_id}) は既に BAN 中です。", ephemeral=True
         )
         return
-    # 前提条件: ゲーム内の通報票が「Bot の1票で成立数に届く」ところまで
-    # 溜まっているときだけ使える (合意なき単独執行はしない)。
-    active = len(cloud.online_players())
-    needed = votes_needed(active)
-    if needed is None:
-        await interaction.response.send_message(
-            f"現在 {active} 人しかおらず、ゲーム内の通報が成立しません"
-            " (成立は6人以上)。",
-            ephemeral=True,
-        )
-        return
-    votes = cloud.report_votes(rec.player_id)
-    if votes < needed - 1:
-        await interaction.response.send_message(
-            f"通報票が不足しています: {display} (ID {rec.player_id}) は現在 "
-            f"{votes} 票。/ban には {needed - 1} 票 (Bot の票で成立数 "
-            f"{needed} 票に到達) が必要です。",
-            ephemeral=True,
-        )
-        return
     await voter.start_ban(rec.player_id)
     await interaction.response.send_message(
         f"BAN開始: {display} (ID {rec.player_id})\n"
-        f"通報票 {votes} 票に Bot の票を加え、成立数 {needed} 票に到達します。"
-        "各クライアントで CSPID 入りし、順次停止します (反映まで数秒)。\n"
+        "Bot が通報票を入れ、各クライアントで CSPID 入りして順次停止します "
+        "(反映まで数秒)。\n"
         "Bot が票を入れ続ける間は停止が維持されます。解除は /unban"
         " (Bot 再起動でも全解除されます)。"
     )
