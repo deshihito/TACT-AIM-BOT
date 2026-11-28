@@ -4,16 +4,24 @@
 ワールド座標は grid * 50。日替わり判定は原作 Map の式そのまま:
 rand 表を (2000-01-01 からの日数 + 0.2666) で引き、3 が出たら 1/2 に引き直す。
 チーム戦 (マップ3固定) かどうかはクラウドから分からないため通常戦前提。
+
+日数は festival.py と同じく UTC 基準で数える (原作の daysSince2000 の
+再現)。ローカル時刻起点だと 0.375 日ずれて、1日の大半の時間帯で
+ローテーションが1つ先のマップになってしまう (2026-11-28 の実害:
+本家はマップ1で対戦中なのに観戦と /map がマップ2を表示した。
+実プレイヤー11人の座標がマップ1の壁とだけ矛盾しないことで確定)。
 """
 from __future__ import annotations
 
 import json
 import math
 import time
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 
 _DATA = json.loads(Path(__file__).with_name("maps.json").read_text(encoding="utf-8"))
+
+EPOCH_UTC = datetime(2000, 1, 1, tzinfo=timezone.utc).timestamp()
 
 
 def current_map_number(project_id: str, now: float | None = None) -> str | None:
@@ -24,7 +32,7 @@ def current_map_number(project_id: str, now: float | None = None) -> str | None:
     if not rotation:
         return "1"
     now = now if now is not None else time.time()
-    days = (datetime.fromtimestamp(now) - datetime(2000, 1, 1)).total_seconds() / 86400
+    days = (now - EPOCH_UTC) / 86400
     idx = math.floor(days + 0.2666)
     m = str(rotation[idx % len(rotation)])
     if m == "3":
