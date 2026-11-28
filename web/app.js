@@ -61,6 +61,7 @@ let curTiles = [];        // 現在のマップのタイル一覧 (フォロー�
 let weaponsData = null;   // {items, scripts, skills}
 let prevSnap = null, curSnap = null, prevAt = 0, curAt = 0;
 let simPlayers = [];      // 最新スナップショットのプレイヤー (弾シミュレーション用)
+let liveOwnerIds = null;  // オンライン中の所有者 ID 集合 (弾の残留掃除用)
 let wallSet = new Set();  // "gx/gy" (弾が当たるマス)
 let gimmicks = [];        // ギミックタイル (マップ順)
 let followId = null;      // フォロー中のプレイヤーID (null=全体表示)
@@ -785,7 +786,15 @@ function simBullet(b) {
   b.hit = 0;
   b.firstCache = {};
   const script = weaponsData?.scripts[b.type];
-  if (!script) return;
+  if (!script || script.length === 0) {
+    // スクリプトの無い弾は原作でも一過性のエフェクト (ガード破壊 等)。
+    // 寿命を持たず描画に残留するため、1フレーム描いてから消す
+    if (weaponsData) {
+      if (b.noScript) b.dead = true;
+      else b.noScript = true;
+    }
+    return;
+  }
   let IF = 0, TF = true;
   let i = 0;
   while (i < script.length) {
@@ -924,6 +933,23 @@ function simBullet(b) {
         }
         break;
       }
+      case "guard": {
+        // 原作 Bullet action の Guard: カウンタ (引数2のフィールド) を
+        // 引数3ずつ進め、引数1を超えたら破壊する。生成物は引数4で、
+        // 0/1 は "ガード破壊"、"-" は無し、それ以外はその種別。
+        // (これが無いとガード弾が寿命を持たず、ファンネルポッド等が
+        //  永続して描画に残留する)
+        if (wasAct) {
+          const fidx = int(V[1]);
+          b.f[fidx] = num(b.f[fidx]) + num(V[2]);
+          if (num(b.f[fidx]) > num(V[0])) {
+            const sel = String(V[3]);
+            const spawn = (sel === "0" || sel === "1") ? "ガード破壊" : sel;
+            deleteBullet(b, [spawn, "-", "-", "-", "-", "-"]);
+          }
+        }
+        break;
+      }
       case "set position": {
         if (wasAct) {
           const o = playerById(b.owner);
@@ -1017,7 +1043,7 @@ function simBullet(b) {
         break;
       }
       default:
-        // sound / bush / put buff / guard / screen stamp / color /
+        // sound / bush / put buff / screen stamp / color /
         // skill point / shield / auto heal / about jj-100 は観戦では無処理
         break;
     }
@@ -1027,7 +1053,26 @@ function simBullet(b) {
 
 function stepSim() {
   flushBullets();
-  for (const b of bullets) if (!b.dead) simBullet(b);
+  for (const b of bullets) {
+    if (b.dead) continue;
+    // 原作 Draw_bullet の番兵: 画面外 (|x| か |y| が 5000 超) の弾と、
+    // 所有者がオンライン一覧に居ない弾は処理しない (残留防止)
+    if (Math.abs(num(b.f[3])) > 5000 || Math.abs(num(b.f[4])) > 5000) {
+      b.dead = true;
+      continue;
+    }
+    if (b.owner !== "0000" && liveOwnerIds && !liveOwnerIds.has(b.owner)) {
+      b.dead = true;
+      continue;
+    }
+    // 設計上の最長寿命 (~700ステップ) を大きく超えた弾の安全弁
+    b.age = (b.age || 0) + 1;
+    if (b.age > 900) {
+      b.dead = true;
+      continue;
+    }
+    simBullet(b);
+  }
   bullets = bullets.filter((b) => !b.dead);
   flushBullets();
 }
@@ -1380,6 +1425,7 @@ async function handleSnap(snap) {
   prevSnap = curSnap; prevAt = curAt;
   curSnap = snap; curAt = performance.now();
   simPlayers = snap.players;
+  liveOwnerIds = new Set(snap.players.map((p) => p.id));
   handleKills(snap.kills);
   // フォロー対象が退出したら全体表示に戻し、一覧と追随表示を同期する。
   // setFollow は使わず冪等に直接書き換える (毎回の再構築で表示が
