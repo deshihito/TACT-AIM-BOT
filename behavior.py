@@ -1,6 +1,8 @@
 """プレイヤーの行動データ収集と分析 (behavior.json に永続化)。
 
-対象は連携したプレイヤーのみ (呼び出し側 bot.py が連携名で絞る)。
+収集と分析の表示は全プレイヤーが対象。ただし戦闘力の相対評価
+(パーセンタイル) の母数は連携プレイヤーのみ (ランキング系は
+連携限定という方針。呼び出し側が連携名の集合を渡す)。
 名前単位でサンプリングし、/analyze の元データにする。プレイヤーIDは
 接続ごとに変わるため、同一性はプレイヤー名 (連携と同じ前提) で持つ。
 
@@ -158,19 +160,26 @@ class BehaviorStore:
         items = sorted(counter.items(), key=lambda kv: -kv[1])[:n]
         return [(k, (v / total * 100 if total else 0.0)) for k, v in items]
 
-    def _percentile(self, metric: str, value: float) -> float:
-        """全プレイヤー (30サンプル以上) の中での順位を 0..100 で返す。"""
+    def _percentile(
+        self, metric: str, value: float, population: set[str] | None
+    ) -> float:
+        """母数 (30サンプル以上) の中での順位を 0..100 で返す。
+
+        population は母数に含めるプレイヤー名 (小文字) の集合で、
+        None なら全プレイヤー。戦闘力の相対評価は連携プレイヤーのみを
+        母数にする想定で、呼び出し側が連携名の集合を渡す。
+        """
         pool = [
             _metrics(p)[metric]
-            for p in self.players.values()
-            if p["samples"] >= 30
+            for key, p in self.players.items()
+            if p["samples"] >= 30 and (population is None or key in population)
         ]
         if len(pool) < 8:
             return -1.0  # 母数が少なく算出不能
         below = sum(1 for v in pool if v <= value)
         return below / len(pool) * 100
 
-    def analyze(self, name: str) -> dict | None:
+    def analyze(self, name: str, population: set[str] | None = None) -> dict | None:
         p = self.get(name)
         if p is None:
             return None
@@ -180,7 +189,7 @@ class BehaviorStore:
         m = _metrics(p)
 
         def axis(metric: str, fixed_cap: float) -> float:
-            pct = self._percentile(metric, m[metric])
+            pct = self._percentile(metric, m[metric], population)
             if pct >= 0:
                 return pct
             return min(100.0, m[metric] / fixed_cap * 100) if fixed_cap > 0 else 0.0

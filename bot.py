@@ -515,12 +515,7 @@ async def grant_kill_coins():
         _coin_cursor = e["seq"]
         killer = cloud.full_name(e["k"])
         victim = cloud.full_name(e["v"])
-        # 行動分析の対象は連携プレイヤーのみ
-        behavior.record_kill(
-            killer if killer and links.user_for_name(killer) else None,
-            victim if victim and links.user_for_name(victim) else None,
-            now,
-        )
+        behavior.record_kill(killer, victim, now)
         if not killer:
             continue
         discord_id = links.user_for_name(killer)
@@ -532,14 +527,12 @@ async def grant_kill_coins():
         entries = dmg[:]
         dmg.clear()
         for attacker_id, damage in entries:
-            name = cloud.full_name(attacker_id)
-            if name and links.user_for_name(name):
-                behavior.record_damage(name, damage, now)
+            behavior.record_damage(cloud.full_name(attacker_id), damage, now)
 
 
 @tasks.loop(seconds=SAMPLE_SECONDS)
 async def sample_behavior():
-    """連携プレイヤーを行動分析用にサンプリングする (対象は連携者のみ)。"""
+    """オンライン中の全プレイヤーを行動分析用にサンプリングする。"""
     from datetime import datetime
     from zoneinfo import ZoneInfo
 
@@ -547,7 +540,7 @@ async def sample_behavior():
     hour = datetime.now(ZoneInfo("Asia/Tokyo")).hour
     for r in cloud.online_players():
         name = cloud.full_name(r.player_id)
-        if not name or not links.user_for_name(name):
+        if not name:
             continue
         behavior.sample(
             name,
@@ -971,12 +964,6 @@ async def analyze_cmd(interaction: discord.Interaction, target: str | None = Non
                     f"プレイヤーが見つかりません: {target}", ephemeral=True
                 )
             return
-        if not links.user_for_name(name):
-            await interaction.response.send_message(
-                f"`{name}` は連携していません。分析は連携したプレイヤーのみ対象です。",
-                ephemeral=True,
-            )
-            return
     else:
         link = links.link_for_user(interaction.user.id)
         if not link:
@@ -986,7 +973,9 @@ async def analyze_cmd(interaction: discord.Interaction, target: str | None = Non
             )
             return
         name = link["name"]
-    a = behavior.analyze(name)
+    # 戦闘力の相対評価の母数は連携プレイヤーのみ (ランキング系は連携限定)
+    population = {v["name"].lower() for v in links.links.values()}
+    a = behavior.analyze(name, population)
     if a is None:
         await interaction.response.send_message(
             f"`{name}` の観測データがまだありません。プレイ中に対象になると自動で記録されます。",

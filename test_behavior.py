@@ -54,6 +54,22 @@ def test_kill_damage_events(tmp_path):
     assert s.analyze("Foe")["deaths"] == 2
 
 
+def test_percentile_population(tmp_path):
+    s = BehaviorStore(tmp_path / "b.json")
+    for j in range(8):
+        for _ in range(30):
+            _sample(s, name=f"linked{j}")
+        s.record_damage(f"linked{j}", j * 350, now=1001.0)
+    for _ in range(30):
+        _sample(s, name="Outsider")
+    s.record_damage("Outsider", 10**7, now=1001.0)
+    pop = {f"linked{j}" for j in range(8)}
+    # 母数を連携8人に限ると linked3 は 4/8 = 50
+    assert s.analyze("linked3", pop)["power"]["火力"] == 50.0
+    # 母数を全員 (9人) にすると巨大ダメージの部外者が入って 4/9 になる
+    assert abs(s.analyze("linked3")["power"]["火力"] - 400 / 9) < 0.01
+
+
 def test_unknown_player(tmp_path):
     s = BehaviorStore(tmp_path / "b.json")
     assert s.analyze("nobody") is None
