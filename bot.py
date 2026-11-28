@@ -15,8 +15,8 @@ TurboWarp クラウド (TACT-AIM 16.9) をスクレイピングし、Discord で
   /unban          - /ban の解除 (管理者専用)
   /map            - プレイヤー配置マップ (PNG、Components V2)
   /tracker        - プレイヤー戦績トラッカー (ページ切替、Components V2)
-  /link           - Discord と TACT-AIM を連携 (全員)。ワンタイムURLから
-                    参加すると紐付き、初回はゲーム内でコインドロップの特典
+  /link           - Discord と TACT-AIM を連携 (全員)。連携中はキルする
+                    ごとに Bot 側のコインが +5 される
 
 トークンは環境変数 DISCORD_TOKEN (.env) から読む。
 フェス登録は state.json に保存され、再起動しても維持される。
@@ -61,6 +61,7 @@ history = History(_history_path)
 cloud = TactAimCloud()
 voter = VoterManager(cloud)
 links = LinkStore(data_dir() / "links.json")
+KILL_COIN_REWARD = 5  # 連携中のキル1回あたりの Bot 側コイン付与量
 
 # 管理者 (Discord ユーザーID)。特定コマンド (raw 等) はこのIDだけが実行できる。
 ADMIN_IDS = {
@@ -255,6 +256,8 @@ async def on_ready():
         auto_switch.start()
     if not check_links.is_running():
         check_links.start()
+    if not grant_kill_coins.is_running():
+        grant_kill_coins.start()
 
 
 @tasks.loop(seconds=30)
@@ -391,7 +394,7 @@ async def festival_clear(interaction: discord.Interaction):
 
 @bot.tree.command(
     name="link",
-    description="TACT-AIM と連携する: 専用リンクから参加すると紐付き、ゲーム内でコインの特典",
+    description="TACT-AIM と連携する: 連携中はキルごとに Bot のコインが +5",
 )
 @app_commands.describe(
     username="任意: 自分の Scratch ユーザーネーム (指定するとその名前で連携)"
@@ -431,7 +434,11 @@ async def link(interaction: discord.Interaction, username: str | None = None):
         discord.ui.Button(label="TACT-AIM を開く", style=discord.ButtonStyle.link, url=url)
     )
     current = links.link_for_user(interaction.user.id)
-    note = f"\n現在の連携: `{current['name']}`" if current else ""
+    note = (
+        f"\n現在の連携: `{current['name']}`（コイン: {links.balance(interaction.user.id)}）"
+        if current
+        else ""
+    )
     await interaction.response.send_message(
         f"{intro}{note}\n{url}",
         view=view,
@@ -446,18 +453,7 @@ async def check_links():
         done = links.try_complete(cloud.full_name(r.player_id))
         if not done:
             continue
-        if done["reward"]:
-            # 初回連携の特典: ダメージボーナス (voter.grant_damage)。
-            # 次回リスポーン時に原作のボーナスでコインが2個落ちる
-            voter.grant_damage(r.player_id, r.x, r.y)
-            text = (
-                f"<@{done['discord_id']}> 連携が完了しました: プレイヤー名 `{done['name']}`"
-                "\n特典として、次回リスポーン時にコインが2個落ちるボーナスを付けました"
-            )
-        else:
-            text = (
-                f"<@{done['discord_id']}> 連携を更新しました: プレイヤー名 `{done['name']}`"
-            )
+        text = f"<@{done['discord_id']}> 連携が完了しました: プレイヤー名 `{done['name']}`"
         channel = bot.get_channel(done["channel_id"])
         try:
             if channel is not None:
@@ -467,6 +463,30 @@ async def check_links():
                 await user.send(text)
         except Exception:
             pass
+
+
+# キルごとのコイン付与で処理済みのキル (recent_kills の seq カーソル)
+_coin_cursor = 0
+
+
+@tasks.loop(seconds=5)
+async def grant_kill_coins():
+    """連携中のプレイヤーのキルを検出し、Bot 側コインを +5 する。
+
+    監視側のキル記録 (cloud.recent_kills) を seq で追い、攻撃者の
+    プレイヤー名から連携ユーザーを引く。付与メッセージは送らない。
+    """
+    global _coin_cursor
+    for e in cloud.recent_kills:
+        if e["seq"] <= _coin_cursor:
+            continue
+        _coin_cursor = e["seq"]
+        name = cloud.full_name(e["k"])
+        if not name:
+            continue
+        discord_id = links.user_for_name(name)
+        if discord_id is not None:
+            links.add_coins(discord_id, KILL_COIN_REWARD)
 
 
 # --- /ban と /unban (管理者専用、voter.py の検知フラグ方式) ---

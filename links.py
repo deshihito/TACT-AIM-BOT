@@ -8,12 +8,9 @@ turbowarp.org/<project>?username=player<コード> から参加したプレイ�
 /link に username オプションを付けた場合は、その Scratch ユーザーネーム
 での参加を検出して紐付ける (名前は先着で、他人の連携済みは取れない)。
 
-連携の特典はゲーム内で付与する: 初回連携の確定時に、Bot のダミー
-プレイヤーが連携者の足元で「70ダメージ与えられた」被弾イベントを
-送り、連携者の Match_damage を加算する。原作 Respawn のボーナス
-(floor(Match_damage / 35) 個のコイン) で、次回リスポーン時に
-コインが2個落ちる (voter.grant_damage)。同一ユーザーの再連携では
-付与しない。
+コインは Bot 側の台帳: 連携中のプレイヤーがキルするごとに +5
+(bot.py の grant_kill_coins が監視側のキル記録から付与する。
+付与時のメッセージは送らない)。
 
 保存先は history と同じ永続データ領域 (リポジトリ外)。
 pending コードはメモリ上のみ (再起動で失効してよい)。
@@ -37,19 +34,23 @@ class LinkStore:
         self.pending: dict[str, dict] = {}
         # 名前 (小文字化) -> {"discord_id": int, "channel_id": int, "expires": float}
         self.pending_names: dict[str, dict] = {}
-        # discord_id(str) -> {"name": str, "code": str, "linked_at": float, "rewarded": bool}
+        # discord_id(str) -> {"name": str, "code": str, "linked_at": float}
         self.links: dict[str, dict] = {}
+        # discord_id(str) -> コイン残高
+        self.coins: dict[str, int] = {}
         try:
             data = json.loads(path.read_text(encoding="utf-8"))
             self.links = {str(k): dict(v) for k, v in data.get("links", {}).items()}
+            self.coins = {str(k): int(v) for k, v in data.get("coins", {}).items()}
         except Exception:
             self.links = {}
+            self.coins = {}
 
     def _save(self) -> None:
         try:
             self.path.parent.mkdir(parents=True, exist_ok=True)
             self.path.write_text(
-                json.dumps({"links": self.links}),
+                json.dumps({"links": self.links, "coins": self.coins}),
                 encoding="utf-8",
             )
         except Exception:
@@ -123,8 +124,7 @@ class LinkStore:
     def try_complete(self, player_name: str, now: float | None = None) -> dict | None:
         """オンラインプレイヤー名が予約 (コード/名前) と一致したら確定する。
 
-        確定したら {"discord_id", "channel_id", "name", "reward"} を返す
-        (reward は今回が初回連携でゲーム内特典の対象かどうか)。
+        確定したら {"discord_id", "channel_id", "name"} を返す。
         """
         now = time.time() if now is None else now
         if not player_name:
@@ -147,22 +147,28 @@ class LinkStore:
 
     def _complete(self, p: dict, player_name: str, code: str, now: float) -> dict:
         did = str(p["discord_id"])
-        prev = self.links.get(did, {})
-        # 旧形式 (bonus) で記録された初回付与済みも引き継ぐ
-        already = bool(prev.get("rewarded") or prev.get("bonus"))
         self.links[did] = {
             "name": player_name,
             "code": code,
             "linked_at": now,
-            "rewarded": True,
         }
         self._save()
         return {
             "discord_id": p["discord_id"],
             "channel_id": p["channel_id"],
             "name": player_name,
-            "reward": not already,
         }
+
+    # --- コイン (Bot 側台帳) ---
+
+    def add_coins(self, discord_id: int, amount: int) -> int:
+        did = str(discord_id)
+        self.coins[did] = self.coins.get(did, 0) + amount
+        self._save()
+        return self.coins[did]
+
+    def balance(self, discord_id: int) -> int:
+        return self.coins.get(str(discord_id), 0)
 
     # --- 参照 ---
 

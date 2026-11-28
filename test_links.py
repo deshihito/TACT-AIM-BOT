@@ -10,14 +10,13 @@ def _store(tmp_path: Path) -> LinkStore:
     return LinkStore(tmp_path / "links.json")
 
 
-def test_issue_and_complete_grants_reward(tmp_path):
+def test_issue_and_complete(tmp_path):
     s = _store(tmp_path)
     code = s.issue(111, 999, now=1000.0)
     assert len(code) == 7 and code.isdigit()
     done = s.try_complete(f"player{code}", now=1100.0)
     assert done is not None
     assert done["discord_id"] == 111
-    assert done["reward"] is True
     assert s.link_for_user(111)["name"] == f"player{code}"
     assert s.user_for_name(f"player{code}") == 111
 
@@ -29,14 +28,13 @@ def test_code_is_one_time(tmp_path):
     assert s.try_complete(f"player{code}", now=1002.0) is None
 
 
-def test_relink_does_not_grant_reward_twice(tmp_path):
+def test_relink_updates_name(tmp_path):
     s = _store(tmp_path)
     c1 = s.issue(111, 999, now=1000.0)
     s.try_complete(f"player{c1}", now=1001.0)
     c2 = s.issue(111, 999, now=2000.0)
     done = s.try_complete(f"player{c2}", now=2001.0)
     assert done is not None
-    assert done["reward"] is False
     assert s.link_for_user(111)["name"] == f"player{c2}"
 
 
@@ -71,7 +69,6 @@ def test_name_claim_flow(tmp_path):
     done = s.try_complete("tako_tomoketa", now=1001.0)
     assert done is not None
     assert done["discord_id"] == 111
-    assert done["reward"] is True
     assert s.user_for_name("tako_tomoketa") == 111
 
 
@@ -102,14 +99,24 @@ def test_code_issue_clears_name_claim(tmp_path):
     assert s.try_complete("my-name", now=1002.0) is None
 
 
+def test_coins(tmp_path):
+    s = _store(tmp_path)
+    assert s.balance(111) == 0
+    assert s.add_coins(111, 5) == 5
+    assert s.add_coins(111, 5) == 10
+    assert s.balance(111) == 10
+    assert s.balance(222) == 0
+
+
 def test_persistence_roundtrip(tmp_path):
     path = tmp_path / "links.json"
     s = LinkStore(path)
     code = s.issue(222, 888, now=1000.0)
     s.try_complete(f"player{code}", now=1001.0)
+    s.add_coins(222, 15)
     s2 = LinkStore(path)
-    assert s2.link_for_user(222)["rewarded"] is True
     assert s2.link_for_user(222)["name"] == f"player{code}"
+    assert s2.balance(222) == 15
     # 再起動後に同じコードで新規発行が衝突しない
     for _ in range(20):
         assert s2.issue(333, 888, now=2000.0) != code

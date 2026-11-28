@@ -37,22 +37,6 @@ def test_build_record_blood():
     assert rec.skill_type == "21"
 
 
-def test_build_record_grant():
-    # 連携特典用: 位置とダメージボーナスの被弾イベントを載せたレコード
-    raw = build_record("7001", 12345, 5, False, "19", "1000",
-                       encode_name_chunk(VOTER_USERNAME, 0),
-                       x=1234, y=-567, hit_event="055437001")
-    assert len(raw) == 246
-    rec = parse_record(raw)
-    assert rec is not None
-    assert (rec.x, rec.y) == (1234, -567)
-    assert len(rec.hits) == 1
-    hit = rec.hits[0]
-    assert hit.attacker_id == "0554"
-    assert hit.damage == 70
-    assert not hit.is_kill
-
-
 def test_name_chunk_round_trip():
     # 全位置のチャンクを集めるとユーザー名が復元できる (監視側の復元と同じ手順)
     chars: dict[int, str] = {}
