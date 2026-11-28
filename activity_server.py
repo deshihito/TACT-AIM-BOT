@@ -9,7 +9,7 @@ WebSocket (/ws) と HTTP (/snapshot) で流す。観戦専用で認証は無い�
 agobot.app 配下の独立パスで公開する場合は ACTIVITY_BASE=/tact-aim のように
 ベースパスを設定する (AGO の Web アプリが /tact-aim をこのサーバーへ
 リライトで中継する。WebSocket は中継できないため、公開経由のクライアントは
-/snapshot をポーリングする)。
+/snapshot/wait のロングポーリングで受ける)。
 """
 from __future__ import annotations
 
@@ -29,6 +29,11 @@ ASSETS = Path(__file__).with_name("assets")
 MAPS_JSON = Path(__file__).with_name("maps.json")
 
 _clients: set[web.WebSocketResponse] = set()
+
+# ロングポーリング用の最新スナップショット (バージョン付き)。
+# _publish_loop が変化を検出した時だけ更新する。
+_snap_state: dict = {"v": 0, "raw": "", "payload": ""}
+_waiters = 0
 
 
 def _raw_int(raw: str, start: int, end: int) -> int:
@@ -110,20 +115,25 @@ async def _ws_handler(request: web.Request) -> web.WebSocketResponse:
     return ws
 
 
-async def _broadcast_loop(app: web.Application) -> None:
+async def _publish_loop(app: web.Application) -> None:
+    """0.2 秒ごとにスナップショットを再構築し、変化があった時だけ
+    バージョンを上げて WebSocket へ流し、ロングポーリングの待機者を起こす。
+    視聴者が居ない間は再構築自体をしない (負荷は視聴中だけ)。"""
     cloud: TactAimCloud = app["cloud"]
-    last = ""
     while True:
-        await asyncio.sleep(0.5)
-        if not _clients:
+        await asyncio.sleep(0.2)
+        if not _clients and _waiters == 0:
             continue
-        payload = json.dumps(snapshot(cloud))
-        if payload == last:
+        snap = snapshot(cloud)
+        raw = json.dumps(snap)
+        if raw == _snap_state["raw"]:
             continue
-        last = payload
+        _snap_state["raw"] = raw
+        _snap_state["v"] += 1
+        _snap_state["payload"] = json.dumps({**snap, "v": _snap_state["v"]})
         for ws in list(_clients):
             try:
-                await ws.send_str(payload)
+                await ws.send_str(_snap_state["payload"])
             except Exception:
                 _clients.discard(ws)
 
@@ -134,8 +144,32 @@ async def _config_handler(request: web.Request) -> web.Response:
 
 async def _snapshot_handler(request: web.Request) -> web.Response:
     # WebSocket を中継できない公開経路 (AGO Web のリライト) 用の HTTP 版。
-    # クライアントが 0.5 秒ごとに取得し、スナップショット間を補間する。
+    # フォールバック用の一回取得 (通常は /snapshot/wait を使う)。
     return web.json_response(snapshot(request.app["cloud"]))
+
+
+async def _wait_handler(request: web.Request) -> web.Response:
+    """ロングポーリング: クライアントの知っているバージョンと最新が
+    違えば即返し、同じなら変化があるまで最大 20 秒保持して返す。
+    変化が無い間は通信もスナップショット再構築も発生しない。"""
+    global _waiters
+    try:
+        since = int(request.query.get("since", "-1"))
+    except ValueError:
+        since = -1
+    _waiters += 1
+    try:
+        deadline = time.monotonic() + 20
+        while True:
+            if _snap_state["payload"] and _snap_state["v"] != since:
+                return web.Response(
+                    text=_snap_state["payload"], content_type="application/json"
+                )
+            if time.monotonic() >= deadline:
+                return web.Response(status=204)
+            await asyncio.sleep(0.1)
+    finally:
+        _waiters -= 1
 
 
 def _base_path() -> str:
@@ -174,6 +208,7 @@ async def start_server(cloud: TactAimCloud, client_id: str = "") -> web.AppRunne
     base = _base_path()
     app.router.add_get(f"{base}/config.json", _config_handler)
     app.router.add_get(f"{base}/snapshot", _snapshot_handler)
+    app.router.add_get(f"{base}/snapshot/wait", _wait_handler)
     app.router.add_get(f"{base}/ws", _ws_handler)
     app.router.add_static(f"{base}/assets/", ASSETS, show_index=False)
     app.router.add_get(f"{base}/maps.json", lambda req: web.FileResponse(MAPS_JSON))
@@ -189,6 +224,6 @@ async def start_server(cloud: TactAimCloud, client_id: str = "") -> web.AppRunne
     port = int(os.environ.get("ACTIVITY_PORT", "8765"))
     site = web.TCPSite(runner, "0.0.0.0", port)
     await site.start()
-    app["broadcast_task"] = asyncio.create_task(_broadcast_loop(app))
+    app["broadcast_task"] = asyncio.create_task(_publish_loop(app))
     print(f"Activity server listening on :{port}", flush=True)
     return runner

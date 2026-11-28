@@ -1449,13 +1449,42 @@ async function handleSnap(snap) {
 }
 
 // 公開経路 (AGO Web のリライト中継) は WebSocket を通せないため、
-// /snapshot を 0.5 秒ごとにポーリングし、変化があった時だけ反映する。
-let lastPayload = "";
+// サーバーが変化を検出するまでリクエストを保持するロングポーリングで
+// 受ける。変化が無い間は通信が発生せず、変化した瞬間に届く。
+let snapVersion = -1;
+let waitFailures = 0;
 async function poll() {
+  try {
+    const res = await fetch(`snapshot/wait?since=${snapVersion}`, { cache: "no-store" });
+    if (res.status === 204) {
+      poll(); // 20 秒変化なし: そのまま張り直す
+      return;
+    }
+    if (!res.ok) throw new Error(res.status);
+    const snap = await res.json();
+    waitFailures = 0;
+    if (typeof snap.v === "number") snapVersion = snap.v;
+    await handleSnap(snap);
+    poll();
+  } catch {
+    waitFailures++;
+    hudState.textContent = "切断されました。再接続します…";
+    if (waitFailures >= 3) {
+      legacyPoll(); // ロングポーリングが通らない経路では従来方式に落とす
+    } else {
+      setTimeout(poll, 1000);
+    }
+  }
+}
+
+// フォールバック: /snapshot を 0.5 秒ごとにポーリングする従来方式
+let lastPayload = "";
+async function legacyPoll() {
   try {
     const res = await fetch("snapshot", { cache: "no-store" });
     if (!res.ok) throw new Error(res.status);
     const text = await res.text();
+    waitFailures = 0;
     if (text !== lastPayload) {
       lastPayload = text;
       await handleSnap(JSON.parse(text));
@@ -1463,7 +1492,7 @@ async function poll() {
   } catch {
     hudState.textContent = "切断されました。再接続します…";
   } finally {
-    setTimeout(poll, 500);
+    setTimeout(legacyPoll, 500);
   }
 }
 poll();
