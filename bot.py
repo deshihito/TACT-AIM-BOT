@@ -416,19 +416,41 @@ def _candidate_lines(candidates) -> str:
     return "\n".join(lines)
 
 
+def _resolve_target(query: str):
+    """名前 or プレイヤーID から対象の player_id を引く。
+
+    戻り値: (player_id | None, 候補リスト)。
+    数字のみ (1〜4桁) の入力は ID として扱い、観測外の ID でもそのまま
+    対象にできる (退出済みの相手の BAN / 解除にも使える)。それ以外は
+    表示名で引き、一意に定まったときだけ返す。
+    """
+    q = query.strip()
+    if q.isascii() and q.isdigit() and len(q) <= 4:
+        return q.zfill(4), []
+    rec, candidates = _resolve_by_name(q)
+    if rec is not None:
+        return rec.player_id, candidates
+    return None, candidates
+
+
+def _display(player_id: str) -> str:
+    full = cloud.full_name(player_id)
+    return f"{full} (ID {player_id})" if full else f"ID {player_id}"
+
+
 @bot.tree.command(
     name="ban",
     description="指定プレイヤーをBANする (管理者専用)",
 )
-@app_commands.describe(name="表示プレイヤー名 (正式なユーザー名)")
-async def ban(interaction: discord.Interaction, name: str):
+@app_commands.describe(target="表示プレイヤー名 または プレイヤーID (数字)")
+async def ban(interaction: discord.Interaction, target: str):
     if not is_admin(interaction.user.id):
         await interaction.response.send_message(
             "このコマンドは管理者専用です。", ephemeral=True
         )
         return
-    rec, candidates = _resolve_by_name(name)
-    if rec is None:
+    player_id, candidates = _resolve_target(target)
+    if player_id is None:
         if candidates:
             await interaction.response.send_message(
                 "対象が一意に定まりません。候補:\n" + _candidate_lines(candidates),
@@ -436,20 +458,21 @@ async def ban(interaction: discord.Interaction, name: str):
             )
         else:
             await interaction.response.send_message(
-                f"「{name}」という表示名のプレイヤーが見つかりません。"
-                "名前は観測できたプレイヤーだけが対象です (/tracker で確認)。",
+                f"「{target}」という表示名のプレイヤーが見つかりません。"
+                "名前は観測できたプレイヤーだけが対象です (/tracker で確認)。"
+                "プレイヤーID (数字) なら観測外でも指定できます。",
                 ephemeral=True,
             )
         return
-    display = cloud.full_name(rec.player_id) or rec.player_id
-    if voter.is_banning(rec.player_id):
+    if voter.is_banning(player_id):
         await interaction.response.send_message(
-            f"{display} (ID {rec.player_id}) は既に BAN 中です。", ephemeral=True
+            f"{_display(player_id)} は既に BAN 中です。", ephemeral=True
         )
         return
-    await voter.start_ban(rec.player_id)
+    await voter.start_ban(player_id)
+    note = "" if cloud.full_name(player_id) else " (現在観測されていないIDです)"
     await interaction.response.send_message(
-        f"BAN開始: {display} (ID {rec.player_id})\n"
+        f"BAN開始: {_display(player_id)}{note}\n"
         "Bot が検知用レコードを送り、各クライアントで CSPID 入りさせます "
         "(反映まで数秒)。\n"
         "Bot が送信を続ける間は停止が維持されます。解除は /unban"
@@ -461,15 +484,15 @@ async def ban(interaction: discord.Interaction, name: str):
     name="unban",
     description="指定プレイヤーの BAN を解除する (管理者専用)",
 )
-@app_commands.describe(name="表示プレイヤー名 (正式なユーザー名)")
-async def unban(interaction: discord.Interaction, name: str):
+@app_commands.describe(target="表示プレイヤー名 または プレイヤーID (数字)")
+async def unban(interaction: discord.Interaction, target: str):
     if not is_admin(interaction.user.id):
         await interaction.response.send_message(
             "このコマンドは管理者専用です。", ephemeral=True
         )
         return
-    rec, candidates = _resolve_by_name(name)
-    if rec is None:
+    player_id, candidates = _resolve_target(target)
+    if player_id is None:
         if candidates:
             await interaction.response.send_message(
                 "対象が一意に定まりません。候補:\n" + _candidate_lines(candidates),
@@ -477,19 +500,18 @@ async def unban(interaction: discord.Interaction, name: str):
             )
         else:
             await interaction.response.send_message(
-                f"「{name}」という表示名のプレイヤーが見つかりません。",
+                f"「{target}」という表示名のプレイヤーが見つかりません。",
                 ephemeral=True,
             )
         return
-    display = cloud.full_name(rec.player_id) or rec.player_id
-    if not await voter.stop_ban(rec.player_id):
+    if not await voter.stop_ban(player_id):
         await interaction.response.send_message(
-            f"{display} (ID {rec.player_id}) は BAN されていません。",
+            f"{_display(player_id)} は BAN されていません。",
             ephemeral=True,
         )
         return
     await interaction.response.send_message(
-        f"BAN解除: {display} (ID {rec.player_id})\n"
+        f"BAN解除: {_display(player_id)}\n"
         "Bot の検知用レコード送信を停止しました。各クライアントの CSPID は"
         "定期消去のタイミングで解除され、対象が復帰します。"
     )
