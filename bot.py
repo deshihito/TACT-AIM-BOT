@@ -1,7 +1,7 @@
 """TACT-AIM 独立 Discord Bot (テスト版)。
 
 TurboWarp クラウド (TACT-AIM 16.9) をスクレイピングし、Discord で情報を出す。
-監視は読み取り専用。執行は /ban だけで、voter.py が Bot 自身の通報票を入れる。
+監視は読み取り専用。執行は /ban だけで、voter.py が検知用レコードを送る。
 
 コマンド:
   !ta online      - 現在オンラインのプレイヤー一覧 (全員)
@@ -11,7 +11,7 @@ TurboWarp クラウド (TACT-AIM 16.9) をスクレイピングし、Discord で
                     フェス時間に自動で切り替わる (原作のフェス判定に従う)。
                     フェスは同時に1つだけ。入れるたびに前の登録と入れ替わる。
   /festival_clear - フェス登録を解除し、通常の TACT-AIM へ戻す (管理者専用)
-  /ban            - Bot の票を入れて排除 (管理者専用)
+  /ban            - チート検知フラグで強制排除 (管理者専用)
   /unban          - /ban の解除 (管理者専用)
   /map            - プレイヤー配置マップ (PNG、Components V2)
   /tracker        - プレイヤー戦績トラッカー (ページ切替、Components V2)
@@ -350,7 +350,7 @@ async def festival_clear(interaction: discord.Interaction):
     )
 
 
-# --- /ban と /unban (管理者専用、voter.py が執行) ---
+# --- /ban と /unban (管理者専用、voter.py の検知フラグ方式) ---
 
 def _resolve_by_name(name: str):
     """表示名 (復元済みの正式名) からプレイヤーを引く。
@@ -421,9 +421,9 @@ async def ban(interaction: discord.Interaction, name: str):
     await voter.start_ban(rec.player_id)
     await interaction.response.send_message(
         f"BAN開始: {display} (ID {rec.player_id})\n"
-        "Bot が通報票を入れ、各クライアントで CSPID 入りして順次停止します "
+        "Bot が検知用レコードを送り、各クライアントで CSPID 入りさせます "
         "(反映まで数秒)。\n"
-        "Bot が票を入れ続ける間は停止が維持されます。解除は /unban"
+        "Bot が送信を続ける間は停止が維持されます。解除は /unban"
         " (Bot 再起動でも全解除されます)。"
     )
 
@@ -461,8 +461,8 @@ async def unban(interaction: discord.Interaction, name: str):
         return
     await interaction.response.send_message(
         f"BAN解除: {display} (ID {rec.player_id})\n"
-        "Bot の票が抜けるため、票数が成立数を下回れば CSPID が解け、"
-        "対象は復帰します (CSPID の定期消去のタイミングにもよります)。"
+        "Bot の検知用レコード送信を停止しました。各クライアントの CSPID は"
+        "定期消去のタイミングで解除され、対象が復帰します。"
     )
 
 

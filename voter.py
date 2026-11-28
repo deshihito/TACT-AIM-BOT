@@ -1,4 +1,4 @@
-"""通報票方式の /ban 執行: Bot が参加者として自分の票を入れる。
+"""チート検知フラグ方式の /ban 執行: Bot が検知用レコードを送る。
 
 原作 (Pen_All) の強制停止は CSPID (不正疑いリスト) で、入り口は通報投票:
 - 参加者は自分のレコードの静的データ枠に kind21=対象ID を載せて送る
@@ -9,10 +9,10 @@
   発射も処理されなくなる (= 事実上の停止。CSPID は約300秒周期で消去
   されるが、票が残っていれば再投入される)。
 
-このモジュールは他人のレコードには一切触らない。Bot 自身の ID・
-レコードだけを使い、/ban の間だけ参加者として接続して通報票を
-入れ続ける。/ban が実行されると、既存の通報票の有無や在席人数に
-かかわらず Bot の票の送信を開始する。
+このモジュールは他人のレコードを上書きせず、Bot 自身のレコードだけを
+使う。TACT-AIM 本体の武器性能検知で、Team_ID に入った対象IDが検知失敗時に
+CSPIDへ追加される挙動を利用し、/ban の間だけ対象IDを Team_ID にした
+検知用レコードを送信する。票数や在席人数には依存しない。
 """
 from __future__ import annotations
 
@@ -54,6 +54,8 @@ def build_record(
     skill_type: str,
     skill_value: str,
     name_chunk: str,
+    team_id: str | None = None,
+    weapon_value: str = "100",
 ) -> str:
     """Bot 自身のレコード (246文字 / blood は247文字) を組み立てる。
 
@@ -67,12 +69,12 @@ def build_record(
         "5000",  # X = 0
         "5000",  # Y = 0
         "500" * 7,  # モーション 7つ (全て 0)
-        player_id,  # Team_ID (未所属 = 自分の ID)
+        team_id or player_id,  # Team_ID
         "1000",  # f13 Laser sight (0)
         "0000000" * 9,  # 発射イベント (なし)
         "10",  # キャラ = Cat
         "0",  # f16
-        "100",  # f17 (0)
+        weapon_value,  # f17 (武器性能検知用の基準値)
         "0",  # f18
         "00",  # f19
         "000000000" * 6,  # 被弾イベント (なし)
@@ -242,9 +244,11 @@ class VoterManager:
                     self._last_seq,
                     version,
                     blood,
-                    "21",  # 静的データ枠 kind21 = 通報
-                    target,
+                    "19",  # kind19 = 武器性能検知を通す
+                    "1000",  # 検知側の期待値と一致しない値
                     encode_name_chunk(VOTER_USERNAME, self._name_pos),
+                    team_id=target,  # 検知失敗時にCSPIDへ追加される対象ID
+                    weapon_value="101",  # weapon index 1、性能不一致を発生させる
                 )
                 # set には user と project_id が必須 (無いと中継されない)
                 await ws.send(
