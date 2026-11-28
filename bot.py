@@ -16,7 +16,7 @@ TurboWarp クラウド (TACT-AIM 16.9) をスクレイピングし、Discord で
   /map            - プレイヤー配置マップ (PNG、Components V2)
   /tracker        - プレイヤー戦績トラッカー (ページ切替、Components V2)
   /link           - Discord と TACT-AIM を連携 (全員)。ワンタイムURLから
-                    参加すると紐付き、初期コイン +2 (Bot 側台帳)
+                    参加すると紐付き、初回はゲーム内でコインドロップの特典
 
 トークンは環境変数 DISCORD_TOKEN (.env) から読む。
 フェス登録は state.json に保存され、再起動しても維持される。
@@ -391,7 +391,7 @@ async def festival_clear(interaction: discord.Interaction):
 
 @bot.tree.command(
     name="link",
-    description="TACT-AIM と連携する: 専用リンクから参加すると紐付き、初期コイン+2",
+    description="TACT-AIM と連携する: 専用リンクから参加すると紐付き、ゲーム内でコインの特典",
 )
 @app_commands.describe(
     username="任意: 自分の Scratch ユーザーネーム (指定するとその名前で連携)"
@@ -431,11 +431,7 @@ async def link(interaction: discord.Interaction, username: str | None = None):
         discord.ui.Button(label="TACT-AIM を開く", style=discord.ButtonStyle.link, url=url)
     )
     current = links.link_for_user(interaction.user.id)
-    note = (
-        f"\n現在の連携: `{current['name']}`（残高 {links.balance(interaction.user.id)} コイン）"
-        if current
-        else ""
-    )
+    note = f"\n現在の連携: `{current['name']}`" if current else ""
     await interaction.response.send_message(
         f"{intro}{note}\n{url}",
         view=view,
@@ -450,15 +446,17 @@ async def check_links():
         done = links.try_complete(cloud.full_name(r.player_id))
         if not done:
             continue
-        if done["bonus"]:
+        if done["reward"]:
+            # 初回連携の特典: 本人の足元でダミーが倒れ、原作のキル報酬
+            # 処理でコインがドロップする (voter.grant_kill)
+            voter.grant_kill(r.player_id, r.x, r.y)
             text = (
                 f"<@{done['discord_id']}> 連携が完了しました: プレイヤー名 `{done['name']}`"
-                f"\n初期コイン +{done['bonus']}（残高 {done['balance']} コイン）"
+                "\n特典として、足元にコインをドロップしました"
             )
         else:
             text = (
                 f"<@{done['discord_id']}> 連携を更新しました: プレイヤー名 `{done['name']}`"
-                f"（残高 {done['balance']} コイン）"
             )
         channel = bot.get_channel(done["channel_id"])
         try:

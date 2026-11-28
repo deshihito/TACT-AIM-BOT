@@ -56,18 +56,24 @@ def build_record(
     name_chunk: str,
     team_id: str | None = None,
     weapon_value: str = "100",
+    x: int = 0,
+    y: int = 0,
+    hit_event: str | None = None,
 ) -> str:
     """Bot 自身のレコード (246文字 / blood は247文字) を組み立てる。
 
-    フィールド配置は record.parse_record と対。ベースエリアで静止する
-    傍観者プレイヤーとして振る舞う (HP満タン、発射なし、チーム未所属)。
+    フィールド配置は record.parse_record と対。既定ではベースエリアで
+    静止する傍観者プレイヤーとして振る舞う (HP満タン、発射なし、
+    チーム未所属)。x/y と hit_event は連携特典のキル付与用で、
+    hit_event は被弾イベントの先頭枠に入る9文字
+    ([攻撃者ID(4)][ダメージ+300(3)][種別(2)、"00"=キル)。
     """
     parts = [
         player_id,  # ID
         f"{seq:05d}",  # seq (World_timer)
         str(version),  # バージョン
-        "5000",  # X = 0
-        "5000",  # Y = 0
+        f"{x + 5000:04d}",  # X
+        f"{y + 5000:04d}",  # Y
         "500" * 7,  # モーション 7つ (全て 0)
         team_id or player_id,  # Team_ID
         "1000",  # f13 Laser sight (0)
@@ -77,7 +83,8 @@ def build_record(
         weapon_value,  # f17 (武器性能検知用の基準値)
         "0",  # f18
         "00",  # f19
-        "000000000" * 6,  # 被弾イベント (なし)
+        hit_event or "000000000",  # 被弾イベント 1件目
+        "000000000" * 5,  # 被弾イベント (残りなし)
         "2140",  # HP = 140
         "2140",  # MaxHP = 140
         "01",  # f23
@@ -118,6 +125,7 @@ class VoterManager:
         self.cloud = cloud
         self._targets: set[str] = set()
         self._task: asyncio.Task | None = None
+        self._grant_task: asyncio.Task | None = None
         self._ws = None
         self._ws_project: str | None = None
         self._drain_task: asyncio.Task | None = None
@@ -152,6 +160,83 @@ class VoterManager:
     async def stop_all(self) -> None:
         self._targets.clear()
         await self._shutdown()
+
+    # --- 連携特典: キル報酬ドロップの付与 ---
+
+    def grant_kill(self, killer_id: str, x: int, y: int) -> None:
+        """killer の足元にダミーを置き、「killer に倒された」という
+        被弾イベント (キル) を送る。killer のクライアントが原作の
+        キル報酬処理 (キルカウント・回復・コインドロップ) を実行する。
+        ドロップ数は原作の抽選 (ceil(random(6,8)/本人の設定値)) で
+        決まるため、こちらでは制御できない。
+        """
+        if self._grant_task is not None and not self._grant_task.done():
+            return
+        self._grant_task = asyncio.create_task(self._grant_run(killer_id, x, y))
+
+    async def _grant_run(self, killer_id: str, x: int, y: int) -> None:
+        try:
+            if self.player_id is None:
+                self.player_id = self._pick_player_id()
+            # ダメージは実在のキル申告と衝突しにくい大きめの値にする
+            # (受信側はイベント文字列で既読管理するため、過去の実キルと
+            # 同じ文字列だと二重に処理されない代わりに付与もされない)
+            damage = random.randint(280, 299)
+            event = f"{killer_id}{damage + 300:03d}00"
+            # ダミーは killer の少し横に置く (ドロップはダミーの位置に出て
+            # killer へ吸着する)。盤面の端では内側へ寄せる
+            dx = 40 if x <= 4950 else -40
+            await self._send_records(event, x + dx, y, seconds=3.5)
+            # イベント無しのレコードで上書きしてから終える (古いイベント
+            # 入りレコードがクラウドに残って再入場時に再処理されないよう)
+            await self._send_records(None, x + dx, y, seconds=1.5)
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            print(f"grant error: {e}", flush=True)
+        finally:
+            if not self._targets:
+                await self._close_ws()
+
+    async def _send_records(
+        self, hit_event: str | None, x: int, y: int, seconds: float
+    ) -> None:
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + seconds
+        while loop.time() < deadline:
+            ws = await self._ensure_ws()
+            version, blood = self._format()
+            world = max(
+                (rec.seq for rec in self.cloud.players.values()),
+                default=0,
+            )
+            self._last_seq = max(self._last_seq + 1, world + 1)
+            self._name_pos = (self._name_pos + 1) % 10
+            record = build_record(
+                self.player_id,
+                self._last_seq,
+                version,
+                blood,
+                "19",
+                "1000",
+                encode_name_chunk(VOTER_USERNAME, self._name_pos),
+                x=x,
+                y=y,
+                hit_event=hit_event,
+            )
+            await ws.send(
+                json.dumps(
+                    {
+                        "method": "set",
+                        "user": VOTER_USERNAME,
+                        "project_id": self.cloud.project_id,
+                        "name": random.choice(CLOUD_VARS),
+                        "value": record,
+                    }
+                )
+                + "\n"
+            )
+            await asyncio.sleep(TICK_SECONDS)
 
     # --- 内部 ---
     async def _shutdown(self) -> None:
