@@ -447,12 +447,12 @@ async def check_links():
         if not done:
             continue
         if done["reward"]:
-            # 初回連携の特典: 本人の足元でダミーが倒れ、原作のキル報酬
-            # 処理でコインがドロップする (voter.grant_kill)
-            voter.grant_kill(r.player_id, r.x, r.y)
+            # 初回連携の特典: ダメージボーナス (voter.grant_damage)。
+            # 次回リスポーン時に原作のボーナスでコインが2個落ちる
+            voter.grant_damage(r.player_id, r.x, r.y)
             text = (
                 f"<@{done['discord_id']}> 連携が完了しました: プレイヤー名 `{done['name']}`"
-                "\n特典として、足元にコインをドロップしました"
+                "\n特典として、次回リスポーン時にコインが2個落ちるボーナスを付けました"
             )
         else:
             text = (

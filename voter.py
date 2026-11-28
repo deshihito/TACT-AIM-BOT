@@ -161,30 +161,34 @@ class VoterManager:
         self._targets.clear()
         await self._shutdown()
 
-    # --- 連携特典: キル報酬ドロップの付与 ---
+    # --- 連携特典: ダメージボーナスの付与 ---
 
-    def grant_kill(self, killer_id: str, x: int, y: int) -> None:
-        """killer の足元にダミーを置き、「killer に倒された」という
-        被弾イベント (キル) を送る。killer のクライアントが原作の
-        キル報酬処理 (キルカウント・回復・コインドロップ) を実行する。
-        ドロップ数は原作の抽選 (ceil(random(6,8)/本人の設定値)) で
-        決まるため、こちらでは制御できない。
+    def grant_damage(self, attacker_id: str, x: int, y: int) -> None:
+        """attacker の足元にダミーを置き、「attacker に 70 ダメージ
+        与えられた」という被弾イベント (非キル) を送る。
+
+        attacker のクライアントでは Match_damage が 70 加算され、
+        原作 Respawn の「無キルかつ Match_damage > 29 なら
+        floor(Match_damage / 35) 個のコインが落ちる」ボーナスで、
+        次回リスポーン時にちょうど2個落ちる (本人が先に実ダメージを
+        与えているとその分増える)。キル方式 (6〜8個の抽選・キル
+        カウント+1) と違い、個数をこちらで調節できる。
         """
         if self._grant_task is not None and not self._grant_task.done():
             return
-        self._grant_task = asyncio.create_task(self._grant_run(killer_id, x, y))
+        self._grant_task = asyncio.create_task(
+            self._grant_run(attacker_id, x, y)
+        )
 
-    async def _grant_run(self, killer_id: str, x: int, y: int) -> None:
+    async def _grant_run(self, attacker_id: str, x: int, y: int) -> None:
         try:
             if self.player_id is None:
                 self.player_id = self._pick_player_id()
-            # ダメージは実在のキル申告と衝突しにくい大きめの値にする
-            # (受信側はイベント文字列で既読管理するため、過去の実キルと
-            # 同じ文字列だと二重に処理されない代わりに付与もされない)
-            damage = random.randint(280, 299)
-            event = f"{killer_id}{damage + 300:03d}00"
-            # ダミーは killer の少し横に置く (ドロップはダミーの位置に出て
-            # killer へ吸着する)。盤面の端では内側へ寄せる
+            # 種別 "01" = 非キルの通常被弾。ダメージ 70 は
+            # floor(70 / 35) = 2 個のドロップに相当する
+            event = f"{attacker_id}{70 + 300:03d}01"
+            # ダミーは attacker の少し横に置く (ダメージボーナスの
+            # 数字表示はダミーの位置に出る)。盤面の端では内側へ寄せる
             dx = 40 if x <= 4950 else -40
             await self._send_records(event, x + dx, y, seconds=3.5)
             # イベント無しのレコードで上書きしてから終える (古いイベント
