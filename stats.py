@@ -33,6 +33,9 @@ class StatsTracker:
         # キル発生のログ ((攻撃者ID, 被害者ID))。呼び出し側 (cloud) が
         # observe のたびに取り出してクリアする (キル表示用)。
         self.kill_log: list[tuple[str, str]] = []
+        # 与ダメージのログ ((攻撃者ID, ダメージ))。行動分析用。
+        # 呼び出し側 (bot) が定期的に取り出してクリアする。
+        self.damage_log: list[tuple[str, int]] = []
 
     def reset(self) -> None:
         self.by_player.clear()
@@ -58,6 +61,7 @@ class StatsTracker:
         attacker = self.get(h.attacker_id)
         attacker.damage_dealt += h.damage
         attacker.hits_landed += 1
+        self.damage_log.append((h.attacker_id, h.damage))
         victim.damage_taken += h.damage
         victim.hits_taken += 1
         if h.is_kill:

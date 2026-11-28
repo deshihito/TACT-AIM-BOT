@@ -17,6 +17,7 @@ TurboWarp クラウド (TACT-AIM 16.9) をスクレイピングし、Discord で
   /tracker        - プレイヤー戦績トラッカー (ページ切替、Components V2)
   /link           - Discord と TACT-AIM を連携 (全員)。連携中はキルする
                     ごとに Bot 側のコインが +5 される
+  /analyze        - プレイヤーの行動分析 (編成・行動のクセ・戦闘力、PNG)
 
 トークンは環境変数 DISCORD_TOKEN (.env) から読む。
 フェス登録は state.json に保存され、再起動しても維持される。
@@ -37,6 +38,8 @@ import discord
 from discord import app_commands
 from discord.ext import commands, tasks
 
+from analyze_render import render_analyze_png
+from behavior import SAMPLE_SECONDS, BehaviorStore
 from cloud import CLOUD_VARS, EXTRA_VARS, PROJECT_ID, TactAimCloud
 from festival import is_festival
 from graph_render import render_trend_png
@@ -62,6 +65,32 @@ cloud = TactAimCloud()
 voter = VoterManager(cloud)
 links = LinkStore(data_dir() / "links.json")
 KILL_COIN_REWARD = 5  # 連携中のキル1回あたりの Bot 側コイン付与量
+behavior = BehaviorStore(data_dir() / "behavior.json")
+ASSETS_DIR = Path(__file__).with_name("assets")
+_weapons_cache: dict[str, list] = {}
+
+
+def weapon_name(project_id: str, raw: str) -> str | None:
+    """レコードの武器フィールド (f17) から武器名を引く。"""
+    try:
+        num = int(raw[113:116]) - 100
+    except (ValueError, IndexError):
+        return None
+    if num < 1:
+        return None
+    items = _weapons_cache.get(project_id)
+    if items is None:
+        try:
+            data = json.loads(
+                (ASSETS_DIR / project_id / "weapons.json").read_text(encoding="utf-8")
+            )
+            items = data["items"]
+            _weapons_cache[project_id] = items
+        except Exception:
+            return None
+    if num - 1 < len(items):
+        return items[num - 1][0]
+    return None
 
 # 管理者 (Discord ユーザーID)。特定コマンド (raw 等) はこのIDだけが実行できる。
 ADMIN_IDS = {
@@ -258,6 +287,8 @@ async def on_ready():
         check_links.start()
     if not grant_kill_coins.is_running():
         grant_kill_coins.start()
+    if not sample_behavior.is_running():
+        sample_behavior.start()
 
 
 @tasks.loop(seconds=30)
@@ -471,22 +502,58 @@ _coin_cursor = 0
 
 @tasks.loop(seconds=5)
 async def grant_kill_coins():
-    """連携中のプレイヤーのキルを検出し、Bot 側コインを +5 する。
+    """キル/ダメージのイベントを処理する (5秒ごと)。
 
-    監視側のキル記録 (cloud.recent_kills) を seq で追い、攻撃者の
-    プレイヤー名から連携ユーザーを引く。付与メッセージは送らない。
+    - 連携中のプレイヤーのキル: Bot 側コインを +5 (メッセージは送らない)
+    - 全プレイヤー: 行動分析用にキル/デスと与ダメージを記録する
     """
     global _coin_cursor
+    now = time.time()
     for e in cloud.recent_kills:
         if e["seq"] <= _coin_cursor:
             continue
         _coin_cursor = e["seq"]
-        name = cloud.full_name(e["k"])
-        if not name:
+        killer = cloud.full_name(e["k"])
+        victim = cloud.full_name(e["v"])
+        behavior.record_kill(killer, victim, now)
+        if not killer:
             continue
-        discord_id = links.user_for_name(name)
+        discord_id = links.user_for_name(killer)
         if discord_id is not None:
             links.add_coins(discord_id, KILL_COIN_REWARD)
+    # 与ダメージ (stats が貯めたログを名前解決して取り込む)
+    dmg = cloud.stats.damage_log
+    if dmg:
+        entries = dmg[:]
+        dmg.clear()
+        for attacker_id, damage in entries:
+            behavior.record_damage(cloud.full_name(attacker_id), damage, now)
+
+
+@tasks.loop(seconds=SAMPLE_SECONDS)
+async def sample_behavior():
+    """オンライン中の全プレイヤーを行動分析用にサンプリングする。"""
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+
+    now = time.time()
+    hour = datetime.now(ZoneInfo("Asia/Tokyo")).hour
+    for r in cloud.online_players():
+        name = cloud.full_name(r.player_id)
+        if not name:
+            continue
+        behavior.sample(
+            name,
+            char=r.character,
+            weapon=weapon_name(cloud.project_id, r.raw),
+            team_color=r.team_color,
+            special=r.special_weapon,
+            x=r.x,
+            y=r.y,
+            hp_ratio=(r.hp / r.max_hp) if r.max_hp else 0.0,
+            hour=hour,
+            now=now,
+        )
 
 
 # --- /ban と /unban (管理者専用、voter.py の検知フラグ方式) ---
@@ -868,6 +935,74 @@ async def player_cmd(interaction: discord.Interaction):
     )
     await interaction.followup.send(
         view=view, file=discord.File(io.BytesIO(png), filename="players.png")
+    )
+
+
+@bot.tree.command(
+    name="analyze",
+    description="プレイヤーの行動分析 (編成・行動のクセ・戦闘力) を画像で表示",
+)
+@app_commands.describe(target="任意: プレイヤー名 または ID (省略時は自分の連携プレイヤー)")
+async def analyze_cmd(interaction: discord.Interaction, target: str | None = None):
+    name: str | None = None
+    if target:
+        player_id, candidates = _resolve_target(target)
+        if player_id:
+            name = cloud.full_name(player_id)
+        if not name and behavior.get(target.strip()):
+            name = target.strip()
+        if not name:
+            if candidates:
+                names = ", ".join(
+                    _display(c.player_id) for c in candidates[:5]
+                )
+                await interaction.response.send_message(
+                    f"候補が複数あります: {names}", ephemeral=True
+                )
+            else:
+                await interaction.response.send_message(
+                    f"プレイヤーが見つかりません: {target}", ephemeral=True
+                )
+            return
+    else:
+        link = links.link_for_user(interaction.user.id)
+        if not link:
+            await interaction.response.send_message(
+                "まず /link で連携してください (またはプレイヤーを指定してください)。",
+                ephemeral=True,
+            )
+            return
+        name = link["name"]
+    a = behavior.analyze(name)
+    if a is None:
+        await interaction.response.send_message(
+            f"`{name}` の観測データがまだありません。プレイ中に対象になると自動で記録されます。",
+            ephemeral=True,
+        )
+        return
+    if a["samples"] < 30:
+        await interaction.response.send_message(
+            f"`{name}` のデータ収集中です (現在 {a['samples']} 回観測)。"
+            "約5分ぶん溜まると分析を表示できます。",
+            ephemeral=True,
+        )
+        return
+    await interaction.response.defer()
+    png = await asyncio.to_thread(render_analyze_png, a)
+    view = discord.ui.LayoutView(timeout=None)
+    view.add_item(
+        discord.ui.Container(
+            discord.ui.TextDisplay(f"**{a['name']} の分析**"),
+            discord.ui.MediaGallery(
+                discord.MediaGalleryItem(
+                    media=discord.UnfurledMediaItem(url="attachment://analyze.png")
+                )
+            ),
+            accent_colour=0x2F81F7,
+        )
+    )
+    await interaction.followup.send(
+        view=view, file=discord.File(io.BytesIO(png), filename="analyze.png")
     )
 
 
