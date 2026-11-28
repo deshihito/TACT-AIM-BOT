@@ -6,6 +6,8 @@ assets/・maps.json を配信し、WebSocket (/ws) でプレイヤーの
 
 公開方法 (Discord Developer Portal の URL マッピング先) は README 参照。
 ポートは環境変数 ACTIVITY_PORT (既定 8765)。
+agobot.app 配下の独立パスで公開する場合は ACTIVITY_BASE=/tact-aim のように
+ベースパスを設定する (Cloudflare Tunnel のパスルーティングで振り分ける)。
 """
 from __future__ import annotations
 
@@ -88,15 +90,29 @@ async def _config_handler(request: web.Request) -> web.Response:
     return web.json_response({"client_id": request.app.get("client_id", "")})
 
 
+def _base_path() -> str:
+    base = os.environ.get("ACTIVITY_BASE", "").strip()
+    if not base:
+        return ""
+    return "/" + base.strip("/")
+
+
 async def start_server(cloud: TactAimCloud, client_id: str = "") -> web.AppRunner:
     app = web.Application()
     app["cloud"] = cloud
     app["client_id"] = client_id
-    app.router.add_get("/config.json", _config_handler)
-    app.router.add_get("/ws", _ws_handler)
-    app.router.add_static("/assets/", ASSETS, show_index=False)
-    app.router.add_get("/maps.json", lambda req: web.FileResponse(MAPS_JSON))
-    app.router.add_static("/", BASE, show_index=True)
+    base = _base_path()
+    app.router.add_get(f"{base}/config.json", _config_handler)
+    app.router.add_get(f"{base}/ws", _ws_handler)
+    app.router.add_static(f"{base}/assets/", ASSETS, show_index=False)
+    app.router.add_get(f"{base}/maps.json", lambda req: web.FileResponse(MAPS_JSON))
+    if base:
+        async def _to_slash(req: web.Request) -> web.Response:
+            raise web.HTTPMovedPermanently(f"{base}/")
+
+        app.router.add_get(base, _to_slash)
+    app.router.add_get(f"{base}/", lambda req: web.FileResponse(BASE / "index.html"))
+    app.router.add_static(f"{base}/", BASE, show_index=False)
     runner = web.AppRunner(app)
     await runner.setup()
     port = int(os.environ.get("ACTIVITY_PORT", "8765"))

@@ -121,12 +121,20 @@ Bot プロセスが HTTP サーバー (環境変数 `ACTIVITY_PORT`、既定 876
 2. **URL Mappings** で `/` → 公開URL (下記) を設定
 3. サーバーで `/watch` を実行するとアクティビティ招待リンクが投稿される
 
-公開URLは Pi のサーバーへ HTTPS で届く必要がある。手軽なのは cloudflared:
+公開URLは Pi のサーバーへ HTTPS で届く必要がある。本番は agobot.app 配下の
+独立パス `/tact-aim` で公開する (AGO 本体のページとは無関係):
+
+1. Pi の `.env` に `ACTIVITY_BASE=/tact-aim` を追加して Bot を再起動
+2. Cloudflare Zero Trust → Networks → Tunnels → 対象トンネル → Public Hostname に
+   追加: Subdomain 空欄 / Domain `agobot.app` / Path `tact-aim*` →
+   Service `http://localhost:8765` (既存の agobot.app 行より先に評価されること)
+3. Developer Portal の URL Mappings で `/` → `https://agobot.app/tact-aim` を設定
+
+手軽に試すだけなら cloudflared のクイックトンネルでもよい:
 
 ```
 cloudflared tunnel --url http://localhost:8765
 ```
 
 表示される `https://*.trycloudflare.com` を URL Mappings に設定する
-(クイックトンネルは再起動で URL が変わる。固定したい場合は名前付きトンネル +
-独自ドメインを使う)。
+(クイックトンネルは再起動で URL が変わる)。
